@@ -8,8 +8,11 @@ version = "0.1.0"
 description = "SLeep security posture API"
 requires-python = ">=3.12"
 dependencies = [
+  "alembic>=1.16,<2",
   "fastapi>=0.116,<1",
   "pydantic>=2.11,<3",
+  "psycopg[binary]>=3.2,<4",
+  "sqlalchemy>=2.0,<3",
   "uvicorn[standard]>=0.35,<1",
 ]
 
@@ -25,3 +28,6 @@ packages = ["src/sleep_api"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+markers = [
+  "postgres: requires a disposable PostgreSQL database in SLEEP_TEST_DATABASE_URL",
+]

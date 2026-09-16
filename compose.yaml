@@ -42,8 +42,36 @@ services:
     restart: unless-stopped
     environment:
       SLEEP_ROOT_PATH: /api
+      SLEEP_DB_HOST: postgres
+      SLEEP_DB_PORT: "5432"
+      SLEEP_DB_NAME: ${POSTGRES_DB:-sleep}
+      SLEEP_DB_USER: ${POSTGRES_USER:-sleep}
+      SLEEP_DB_PASSWORD: ${POSTGRES_PASSWORD:-sleep}
+      SLEEP_SEED_DEMO: ${SLEEP_SEED_DEMO:-false}
     expose:
       - "8000"
+    networks:
+      - backend
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sleep}
+      POSTGRES_USER: ${POSTGRES_USER:-sleep}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sleep}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sleep} -d ${POSTGRES_DB:-sleep}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
     networks:
       - backend
     security_opt:
@@ -57,3 +85,4 @@ networks:
 volumes:
   caddy_data:
   caddy_config:
+  postgres_data:

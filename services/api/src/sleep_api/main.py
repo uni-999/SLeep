@@ -2,9 +2,12 @@ import os
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 
+from .database import get_session
 from .models import CveFinding, Device, EventType, ProbeJob, ProbeRequest, SecurityEvent, Severity
-from .repository import repository
+from .repository import SqlRepository
 
 
 app = FastAPI(
@@ -22,9 +25,17 @@ def organization_id(x_organization_id: Annotated[str, Header()]) -> str:
 
 
 OrganizationId = Annotated[str, Depends(organization_id)]
+DatabaseSession = Annotated[Session, Depends(get_session)]
 
 
-def require_device(org_id: str, device_id: str) -> Device:
+def get_repository(session: DatabaseSession) -> SqlRepository:
+    return SqlRepository(session)
+
+
+Repository = Annotated[SqlRepository, Depends(get_repository)]
+
+
+def require_device(repository: SqlRepository, org_id: str, device_id: str) -> Device:
     device = repository.get_device(org_id, device_id)
     if device is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Device not found")
@@ -36,23 +47,30 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/ready")
+def readiness(session: DatabaseSession) -> dict[str, str]:
+    session.execute(text("SELECT 1"))
+    return {"status": "ready"}
+
+
 @app.get("/v1/devices", response_model=list[Device])
-def list_devices(org_id: OrganizationId) -> list[Device]:
+def list_devices(org_id: OrganizationId, repository: Repository) -> list[Device]:
     return repository.list_devices(org_id)
 
 
 @app.get("/v1/devices/{device_id}", response_model=Device)
-def get_device(device_id: str, org_id: OrganizationId) -> Device:
-    return require_device(org_id, device_id)
+def get_device(device_id: str, org_id: OrganizationId, repository: Repository) -> Device:
+    return require_device(repository, org_id, device_id)
 
 
 @app.get("/v1/devices/{device_id}/cves", response_model=list[CveFinding])
 def list_cves(
     device_id: str,
     org_id: OrganizationId,
+    repository: Repository,
     severity: Annotated[Severity | None, Query()] = None,
 ) -> list[CveFinding]:
-    require_device(org_id, device_id)
+    require_device(repository, org_id, device_id)
     return repository.list_cves(org_id, device_id, severity)
 
 
@@ -60,9 +78,10 @@ def list_cves(
 def list_events(
     device_id: str,
     org_id: OrganizationId,
+    repository: Repository,
     event_type: Annotated[EventType | None, Query()] = None,
 ) -> list[SecurityEvent]:
-    require_device(org_id, device_id)
+    require_device(repository, org_id, device_id)
     return repository.list_events(org_id, device_id, event_type)
 
 
@@ -71,8 +90,14 @@ def list_events(
     response_model=ProbeJob,
     status_code=status.HTTP_202_ACCEPTED,
 )
-def queue_probe(device_id: str, cve_id: str, request: ProbeRequest, org_id: OrganizationId) -> ProbeJob:
-    require_device(org_id, device_id)
+def queue_probe(
+    device_id: str,
+    cve_id: str,
+    request: ProbeRequest,
+    org_id: OrganizationId,
+    repository: Repository,
+) -> ProbeJob:
+    require_device(repository, org_id, device_id)
     if repository.get_cve(org_id, device_id, cve_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="CVE finding not found")
     return repository.queue_probe(org_id, device_id, cve_id, request.probe)
