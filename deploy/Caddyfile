@@ -1,0 +1,19 @@
+{$APP_HOST:http://localhost} {
+    encode zstd gzip
+
+    handle_path /api/* {
+        reverse_proxy api:8000
+    }
+
+    handle {
+        reverse_proxy web:80
+    }
+
+    header {
+        -Server
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "no-referrer"
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+    }
+}

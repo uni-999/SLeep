@@ -1,0 +1,59 @@
+name: sleep
+
+services:
+  gateway:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      APP_HOST: ${APP_HOST:-http://localhost}
+    ports:
+      - "${HTTP_PORT:-8080}:80"
+      - "${HTTPS_PORT:-8443}:443"
+      - "${HTTPS_PORT:-8443}:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    networks:
+      - edge
+      - backend
+    security_opt:
+      - no-new-privileges:true
+
+  web:
+    build:
+      context: ./apps/web
+    restart: unless-stopped
+    expose:
+      - "80"
+    networks:
+      - backend
+    security_opt:
+      - no-new-privileges:true
+
+  api:
+    build:
+      context: ./services/api
+    restart: unless-stopped
+    environment:
+      SLEEP_ROOT_PATH: /api
+    expose:
+      - "8000"
+    networks:
+      - backend
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  edge:
+  backend:
+    internal: true
+
+volumes:
+  caddy_data:
+  caddy_config:
