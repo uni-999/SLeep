@@ -35,16 +35,35 @@ global vulnerability knowledge base receives new information.
 
 ## Event model
 
-The MVP uses two levels:
+The MVP uses three levels:
 
 ```text
-Raw record -> Event
+Raw record -> Event -> Incident
 ```
 
 Event clustering is deterministic and type-specific. Authentication, process,
 network, package, and service/configuration events each use their own correlation
 key, inactivity gap, and maximum time window. Every event retains references to
 its raw evidence.
+
+## Incident investigation
+
+An `Incident` is an analyst-owned investigation. The MVP keeps it deliberately
+small:
+
+- An analyst creates an Incident from one or more Events, possibly from several
+  devices of the same organization.
+- CVE findings are linked as a probable `entry_point` or as `context`.
+- The timeline is assembled on read from linked Events, CVE detection times,
+  safe probe jobs, and analyst notes, so it always reflects the current scope.
+- Deterministic, explainable rules suggest related Events (same actor, same
+  device within the time window, shared entity) and CVE findings (component
+  matches the event, external exposure).
+- The lifecycle is `open -> investigating -> closed`; closing requires a verdict
+  and a written conclusion, and every change is journaled.
+
+The full specification (data model, timeline, suggestion rules, API, UI, and the
+demo scenario) is in [`incident-investigation.md`](incident-investigation.md).
 
 ## Risk and verification
 
@@ -72,19 +91,19 @@ external perspectives.
 - CVE matching with evidence and confidence.
 - Deterministic clustering for five initial event types.
 - Device workspace with `CVE` and `Events` tabs.
+- Simplified incident investigation: Events and CVE findings grouped into an
+  Incident, automatic timeline, suggestions, notes, verdict, and conclusion.
 - Safe verification jobs.
 - Explainable risk score and remediation report.
 
-## Deferred note: Incident
+## Deferred: full incident management
 
-`Incident` intentionally stays outside the MVP. It will later represent an
-analyst-owned investigation that joins multiple Events, CVEs, attack paths,
-evidence, decisions, comments, and tasks:
+The MVP Incident is a single-analyst investigation record, not a full
+incident-management system. The following stay outside the MVP:
 
-```text
-Raw record -> Event -> Incident
-```
-
-Adding it also requires ownership, collaboration, SLA, decision history, and
-closure workflows. Until those features exist, Events remain independent and do
-not imitate a partial incident-management system.
+- ownership by several analysts, SLA, escalations, and notifications;
+- comment threads, tasks, and decision history beyond the change journal;
+- attack paths built from the asset graph inside an Incident;
+- automatic Incident creation from correlation rules;
+- playbooks and any automated response on customer hosts;
+- integration with external ticketing systems.
