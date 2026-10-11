@@ -1,8 +1,8 @@
 # Self-hosting SLeep
 
 SLeep no longer requires ChatGPT Sites, Vinext, Wrangler, or Cloudflare Workers.
-The web client is a static Vite application, the API is a FastAPI service, and
-Caddy is the only public entry point.
+The web client is a static Vite application, the API is a FastAPI service,
+PostgreSQL stores product state, and Caddy is the only public entry point.
 
 ## Local launch
 
@@ -14,6 +14,11 @@ docker compose up --build -d
 Open `http://localhost:8080`. The API health endpoint is available at
 `http://localhost:8080/api/health`, and its OpenAPI UI is at
 `http://localhost:8080/api/docs`.
+
+Set `SLEEP_SEED_DEMO=true` in `.env` before the first start when sample devices,
+events, and CVE findings are useful. With the default `false`, the database starts
+empty and waits for real inventory data. Changing the flag to `false` later only
+stops future seeding; it does not delete demo records that already exist.
 
 Stop the stack without deleting its TLS state:
 
@@ -43,15 +48,16 @@ docker compose up --build -d
 ```
 
 Caddy obtains and renews the public TLS certificate automatically. The API is
-published under the same origin at `/api`; its container is not exposed directly.
+published under the same origin at `/api`; its container and PostgreSQL are not
+exposed directly. Alembic migrations run before every API start and PostgreSQL
+data is retained in the `postgres_data` Docker volume.
 
 ## Current boundary
 
-The API still uses the demo in-memory repository. PostgreSQL, the event queue,
-object storage, authentication, and the separate agent mTLS gateway belong to
-the next backend slices. The future `ingest` endpoint should be deployed as a
-separate service and hostname instead of sharing the user-facing API boundary.
-
-The old `chatgpt.site` deployment is independent from this stack. It can remain
-as a private design preview and be removed after the first external deployment
-is verified.
+The local stack seeds a demo organization when `SLEEP_SEED_DEMO=true`. Disable
+it and replace the default database password before production deployment. Demo
+seeding is disabled by default; enable it explicitly only for a local preview. The
+event queue, object storage, authentication, and separate agent mTLS gateway
+belong to the next backend slices. The future `ingest` endpoint should be
+deployed as a separate service and hostname instead of sharing the user-facing
+API boundary.

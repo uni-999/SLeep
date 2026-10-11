@@ -7,12 +7,12 @@ explainable remediation plans.
 ## Repository layout
 
 - `apps/web`: SOC analyst workspace built with React, TypeScript, and Vite.
-- `services/api`: tenant-scoped FastAPI contracts for devices, CVEs, events, and safe probes.
+- `services/api`: tenant-scoped FastAPI API backed by PostgreSQL and Alembic migrations.
 - `docs/product-plan.md`: accepted product decisions, MVP boundary, and deferred work.
 - `compose.yaml`: provider-neutral self-hosted web and API stack behind Caddy.
 
-The current slice uses representative data while the agent and ingestion pipeline
-are being implemented.
+The current slice persists representative seed data in PostgreSQL while the
+agent and ingestion pipeline are being implemented.
 
 ## Run the full stack
 
