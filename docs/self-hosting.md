@@ -92,6 +92,27 @@ When they do not, route Docker Desktop through your VPN or proxy
 npm-compatible mirror. The lockfile pins integrity hashes, so a mirror cannot
 substitute package contents.
 
+## Vulnerability knowledge base updater
+
+The `vulndb` service downloads Debian and Ubuntu advisories (OSV.dev), EPSS
+scores, and the CISA KEV catalog into the PostgreSQL schema `vulndb`. It is the
+only container with outbound internet access (the `egress` network); it needs
+HTTPS access to `osv-vulnerabilities.storage.googleapis.com`,
+`epss.empiricalsecurity.com`, and `www.cisa.gov`. The first full download takes
+a few minutes; after that only changes are fetched.
+
+```bash
+docker compose exec vulndb sleep-vulndb status        # freshness of every source
+docker compose exec vulndb sleep-vulndb sync --full   # reload everything now
+docker compose logs -f vulndb
+```
+
+If the feeds are reachable only through a proxy, set `SLEEP_VULNDB_PROXY_URL`
+in `.env`. `SLEEP_VULNDB_SOURCES=none` keeps the service idle, for example on a
+host without internet access. A feed that is temporarily unreachable does not
+make the container unhealthy; check `sleep-vulndb status` instead. All options
+are listed in [`services/vulndb/README.md`](../services/vulndb/README.md).
+
 ## Access boundary
 
 The API does not authenticate users yet: it trusts the `X-Organization-ID`

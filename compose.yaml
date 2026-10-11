@@ -62,6 +62,31 @@ services:
       postgres:
         condition: service_healthy
 
+  # Keeps the global vulnerability knowledge base (OSV Debian/Ubuntu, EPSS,
+  # CISA KEV) up to date in the PostgreSQL schema "vulndb". It is the only
+  # service with outbound internet access and it accepts no inbound traffic.
+  vulndb:
+    build:
+      context: ./services/vulndb
+    restart: unless-stopped
+    environment:
+      SLEEP_DB_HOST: postgres
+      SLEEP_DB_PORT: "5432"
+      SLEEP_DB_NAME: ${POSTGRES_DB:-sleep}
+      SLEEP_DB_USER: ${POSTGRES_USER:-sleep}
+      SLEEP_DB_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      SLEEP_VULNDB_SOURCES: ${SLEEP_VULNDB_SOURCES:-}
+      SLEEP_VULNDB_OSV_ECOSYSTEMS: ${SLEEP_VULNDB_OSV_ECOSYSTEMS:-}
+      SLEEP_VULNDB_PROXY_URL: ${SLEEP_VULNDB_PROXY_URL:-}
+    networks:
+      - backend
+      - egress
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -85,6 +110,9 @@ networks:
   edge:
   backend:
     internal: true
+  # Outbound internet for the vulndb updater only. A separate network keeps it
+  # out of reach of the public gateway.
+  egress:
 
 volumes:
   caddy_data:

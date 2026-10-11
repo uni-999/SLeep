@@ -24,6 +24,8 @@ SLeep — учебный проект для выпускной квалифик
 - `docs/product-plan.md` — цели, принятая архитектура, граница MVP;
 - `docs/incident-investigation.md` — спецификация упрощённого расследования
   инцидентов (модель данных, хронология, подсказки, API, интерфейс);
+- `docs/vulnerability-database.md` — база знаний об уязвимостях: источники,
+  схема `vulndb`, алгоритм синхронизации, сравнение версий dpkg;
 - `docs/self-hosting.md` — запуск и развёртывание.
 
 ## Текущее состояние
@@ -33,9 +35,14 @@ SLeep — учебный проект для выпускной квалифик
   организаций. Ветка `feature/postgres-persistence` влита в `main` (PR #1).
 - **Доступ к сайту** закрыт HTTP basic auth в Caddy (локально
   `analyst` / `sleep-local`) — временно, до настоящей аутентификации.
+- **База знаний об уязвимостях** (`services/vulndb`) — готова: отдельный
+  сервис загружает OSV (Debian, Ubuntu), EPSS и CISA KEV в схему PostgreSQL
+  `vulndb` (своя история Alembic), обновляет их по расписанию и умеет отвечать,
+  какие CVE затрагивают версию пакета (`sleep-vulndb lookup`).
 - **Агент на Go** (`agent/`) — не начат: в репозитории только пустые каталоги.
-- **Обработка данных** (сопоставление CVE, кластеризация событий, расчёт риска,
-  план исправлений) — не начата.
+- **Обработка данных** — сопоставление инвентаризации с базой знаний (создание
+  `cve_findings`), кластеризация событий, расчёт риска и план исправлений не
+  начаты.
 - **Расследование инцидентов** — специфицировано, не реализовано.
 - **Веб-интерфейс** не обращается к API: данные захардкожены в
   `apps/web/app/page.tsx`.
@@ -62,8 +69,21 @@ services/api/          FastAPI
     seed.py            Демо-данные
   migrations/          Alembic
   tests/               pytest
+services/vulndb/       Обновление базы знаний об уязвимостях (единственный сервис с выходом в интернет)
+  src/sleep_vulndb/
+    cli.py             Команды run, sync, status, lookup, health
+    scheduler.py       Цикл обновления по интервалам, пульс для healthcheck
+    sync.py            Запуск источника: одна транзакция, журнал sync_runs, блокировка
+    sources/           osv.py (Debian, Ubuntu), epss.py, kev.py
+    http.py            Скачивание: условные запросы, повторы, лимит размера
+    lookup.py          Какие CVE затрагивают версию пакета
+    debversion.py      Сравнение версий как в dpkg
+    cvss.py            Базовый балл CVSS v3.1 по вектору
+    db_models.py       Таблицы схемы vulndb
+  migrations/          Alembic, версия в vulndb.alembic_version
+  tests/               pytest; источники подменяются фейковым HTTP
 deploy/Caddyfile       Единая точка входа: / → web, /api/* → api
-compose.yaml           gateway (Caddy), web (nginx), api, postgres
+compose.yaml           gateway (Caddy), web (nginx), api, vulndb, postgres
 compose.dev.yaml       Только для разработки: PostgreSQL на 127.0.0.1:5432
 docs/                  Документация продукта
 ```
@@ -102,6 +122,19 @@ alembic revision -m "описание"     # новая миграция, имя
 SLEEP_TEST_DATABASE_URL='postgresql+psycopg://…/test_db' pytest   # тест миграций на PostgreSQL
 ```
 
+Сервис базы уязвимостей (из `services/vulndb`, Python 3.12+):
+
+```bash
+python -m venv .venv && . .venv/bin/activate
+pip install -e '.[dev]'
+pytest                             # SQLite; HTTP-источники подменены, интернет не нужен
+SLEEP_TEST_DATABASE_URL='postgresql+psycopg://…/test_db' pytest   # + PostgreSQL
+sleep-vulndb sync --source kev     # разовое обновление (нужен интернет)
+sleep-vulndb status
+sleep-vulndb lookup --ecosystem Ubuntu:22.04:LTS --package openssh --version 1:8.9p1-3ubuntu0.6
+docker compose exec vulndb sleep-vulndb status   # в запущенном стеке
+```
+
 Веб-интерфейс (из `apps/web`, Node 22.13+, pnpm). Версия pnpm закреплена в
 `package.json` (`packageManager`), Dockerfile ставит именно её. Не убирай
 закрепление: без него в образ попадает самая новая pnpm, и сборка ломается.
@@ -126,15 +159,20 @@ pnpm format     # oxfmt
 
 - `api` — `pytest` на Python 3.12 с сервисом PostgreSQL 16, включая проверку
   миграций на PostgreSQL (`SLEEP_TEST_DATABASE_URL`);
+- `vulndb` — `pytest` сервиса базы уязвимостей на Python 3.12 с PostgreSQL 16
+  (миграции в схеме `vulndb`, синхронизация, блокировки); интернет не нужен;
 - `web` — `pnpm install --frozen-lockfile`, `pnpm lint`, `pnpm build`;
-- `stack` — после `api` и `web`: собирает весь `docker compose` с демо-данными,
-  ждёт `healthy` и проверяет через шлюз, что без логина отвечает `401`, а с
-  логином открываются интерфейс, `/api/health`, `/api/ready` и устройства.
+- `stack` — после `api`, `vulndb` и `web`: собирает весь `docker compose` с
+  демо-данными и `SLEEP_VULNDB_SOURCES=none` (без внешних источников), ждёт
+  `healthy` и проверяет через шлюз, что без логина отвечает `401`, а с логином
+  открываются интерфейс, `/api/health`, `/api/ready` и устройства; затем
+  проверяет `sleep-vulndb status` и `health` внутри контейнера.
 
 **`publish.yml` (Publish)** — запускается событием `workflow_run`, когда Test
 успешно завершился на push в `main`. Публикует ровно протестированный коммит
 (`workflow_run.head_sha`) в GitHub Container Registry:
-`ghcr.io/uni-999/sleep-api` и `ghcr.io/uni-999/sleep-web` с тегами
+`ghcr.io/uni-999/sleep-api`, `ghcr.io/uni-999/sleep-vulndb` и
+`ghcr.io/uni-999/sleep-web` с тегами
 `<12 символов SHA>` и `latest`. Право `packages: write` есть только у этого
 workflow; pull request'ы его не запускают. Публикации идут по одной
 (`concurrency: publish`), чтобы `latest` указывал на последний push. Push в другие ветки
@@ -177,6 +215,14 @@ workflow `Test` используется в `publish.yml` — переимено
 8. **Внешние и внутренние ID.** В БД — UUID; в API — внешние идентификаторы
    (`prod-web-01`, `evt-01842`, `CVE-2024-6387`, `INC-0001`). Внутренние UUID
    наружу не отдаются.
+9. **Выход в интернет — только у `vulndb`.** Он подключён к сети `egress`;
+   API, PostgreSQL и веб остаются во внутренней сети `backend`. Новые внешние
+   источники данных добавляются в `vulndb` (интерфейс `FeedSource`), а не в API.
+10. **База знаний — общая и отдельная.** Таблицы `vulndb.*` — справочные данные
+    для всех организаций, без `organization_id`; данные организаций туда не
+    пишутся. У схемы своя история Alembic; таблицы API в `public` её не
+    касаются, и наоборот. Обновление источника атомарно: данные, курсор и
+    запись журнала фиксируются одной транзакцией.
 
 ## Соглашения по коду
 
@@ -204,6 +250,9 @@ workflow `Test` используется в `publish.yml` — переимено
 
 - Тест API поднимает SQLite в памяти с `PRAGMA foreign_keys=ON` и seed
   (фикстура `api` в `tests/test_api.py`).
+- Тесты `vulndb` не ходят в интернет: фикстура `feeds` (`tests/conftest.py`)
+  отдаёт фейковые ответы OSV, EPSS и KEV через `httpx.MockTransport`. На SQLite
+  схема `vulndb` снимается через `schema_translate_map`.
 - Для каждой новой сущности, принадлежащей организации, добавляй тест, что её
   нельзя прочитать или связать из другой организации — через API и напрямую
   через БД (`IntegrityError`).
@@ -251,4 +300,5 @@ workflow `Test` используется в `publish.yml` — переимено
    (раздел «Этапы реализации»).
 2. Подключить веб-интерфейс к API вместо захардкоженных данных.
 3. Начать Go-агента: сбор пакетов и ОС, отправка снимка инвентаризации.
-4. Сопоставление пакетов с CVE (Ubuntu/Debian на первом шаге) и расчёт риска.
+4. Сопоставление пакетов из инвентаризации с базой знаний (`lookup.find_affecting`)
+   → `cve_findings`, пересчёт после обновления базы, расчёт риска (CVSS, EPSS, KEV).

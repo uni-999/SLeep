@@ -15,6 +15,11 @@ specialists. It never receives general-purpose remote control of customer hosts.
 - Raw logs and snapshots are stored in a Data Lake.
 - Python workers normalize records, cluster events, build graphs, match CVEs,
   calculate risk, optimize remediation, and prepare reports.
+- A separate updater service (`services/vulndb`) keeps a global vulnerability
+  knowledge base in the PostgreSQL schema `vulndb`: Debian and Ubuntu advisories
+  from OSV.dev, EPSS scores, and the CISA KEV catalog. It is the only service
+  with outbound internet access and holds no tenant data. See
+  [`vulnerability-database.md`](vulnerability-database.md).
 - FastAPI exposes tenant-scoped product APIs.
 - React and TypeScript provide the analyst workspace.
 - PostgreSQL stores normalized product state; object storage keeps raw snapshots
