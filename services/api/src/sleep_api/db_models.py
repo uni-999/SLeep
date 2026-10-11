@@ -52,8 +52,6 @@ class DeviceRecord(Base):
         UniqueConstraint("organization_id", "id"),
         CheckConstraint("status IN ('online', 'degraded', 'offline')", name="ck_devices_status"),
         CheckConstraint("risk_score BETWEEN 0 AND 100", name="ck_devices_risk_score"),
-        CheckConstraint("cve_count >= 0", name="ck_devices_cve_count"),
-        CheckConstraint("critical_cve_count >= 0", name="ck_devices_critical_cve_count"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -65,8 +63,6 @@ class DeviceRecord(Base):
     address: Mapped[str] = mapped_column(String(255))
     status: Mapped[str] = mapped_column(String(32))
     risk_score: Mapped[int] = mapped_column(Integer, default=0)
-    cve_count: Mapped[int] = mapped_column(Integer, default=0)
-    critical_cve_count: Mapped[int] = mapped_column(Integer, default=0)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)

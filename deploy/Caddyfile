@@ -1,6 +1,13 @@
 {$APP_HOST:http://localhost} {
     encode zstd gzip
 
+    # Temporary access boundary until the API has real authentication.
+    # The API still trusts X-Organization-ID, so the whole site, including
+    # /api, must stay closed to anonymous clients.
+    basic_auth {
+        {$BASIC_AUTH_USER} {$BASIC_AUTH_HASH}
+    }
+
     handle_path /api/* {
         reverse_proxy api:8000
     }

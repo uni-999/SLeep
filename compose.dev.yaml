@@ -1,0 +1,19 @@
+# Local development override. Publishes PostgreSQL on the loopback interface so
+# the API can run on the host with `uvicorn --reload` and tests can use a real
+# database:
+#
+#   docker compose -f compose.yaml -f compose.dev.yaml up -d postgres
+#
+# Never use this file in production.
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:${POSTGRES_DEV_PORT:-5432}:5432"
+    # Published ports do not work for containers attached only to an
+    # internal network, so the database also joins a regular one here.
+    networks:
+      - backend
+      - dev
+
+networks:
+  dev:
