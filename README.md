@@ -1,5 +1,8 @@
 # SLeep
 
+[![Test](https://github.com/uni-999/SLeep/actions/workflows/test.yml/badge.svg)](https://github.com/uni-999/SLeep/actions/workflows/test.yml)
+[![Publish](https://github.com/uni-999/SLeep/actions/workflows/publish.yml/badge.svg)](https://github.com/uni-999/SLeep/actions/workflows/publish.yml)
+
 SLeep is a multi-tenant security posture platform for collecting host facts,
 matching applicable CVEs, clustering security-relevant activity, and producing
 explainable remediation plans.

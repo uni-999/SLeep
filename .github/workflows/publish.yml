@@ -1,0 +1,68 @@
+name: Publish
+
+# Publishes container images only for commits that passed the Test workflow
+# on a push to main. Pull request runs never trigger this workflow.
+on:
+  workflow_run:
+    workflows: [Test]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  # Publish one commit at a time so "latest" follows the order of pushes.
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish images to GHCR
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      # The commit that passed the tests, not the current head of main.
+      REVISION: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Log in to GitHub Container Registry
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GITHUB_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: Build and push images
+        run: |
+          set -eu
+          owner=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          short_sha=$(echo "$REVISION" | cut -c1-12)
+
+          for service in api web; do
+            case "$service" in
+              api) context=services/api ;;
+              web) context=apps/web ;;
+            esac
+            image="ghcr.io/$owner/sleep-$service"
+
+            docker build \
+              --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+              --label "org.opencontainers.image.revision=$REVISION" \
+              --tag "$image:$short_sha" \
+              --tag "$image:latest" \
+              "$context"
+            docker push --all-tags "$image"
+
+            echo "Published \`$image:$short_sha\` and \`$image:latest\`" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Log out
+        if: always()
+        run: docker logout ghcr.io

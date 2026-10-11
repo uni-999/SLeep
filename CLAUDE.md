@@ -117,6 +117,35 @@ pnpm format     # oxfmt
 
 После изменений запускай тесты и линтер той части, которую менял.
 
+## CI
+
+Два workflow в `.github/workflows/`:
+
+**`test.yml` (Test)** — на каждый pull request, на push в `main` и вручную:
+
+- `api` — `pytest` на Python 3.12 с сервисом PostgreSQL 16, включая проверку
+  миграций на PostgreSQL (`SLEEP_TEST_DATABASE_URL`);
+- `web` — `pnpm install --frozen-lockfile`, `pnpm lint`, `pnpm build`;
+- `stack` — после `api` и `web`: собирает весь `docker compose` с демо-данными,
+  ждёт `healthy` и проверяет через шлюз, что без логина отвечает `401`, а с
+  логином открываются интерфейс, `/api/health`, `/api/ready` и устройства.
+
+**`publish.yml` (Publish)** — запускается событием `workflow_run`, когда Test
+успешно завершился на push в `main`. Публикует ровно протестированный коммит
+(`workflow_run.head_sha`) в GitHub Container Registry:
+`ghcr.io/uni-999/sleep-api` и `ghcr.io/uni-999/sleep-web` с тегами
+`<12 символов SHA>` и `latest`. Право `packages: write` есть только у этого
+workflow; pull request'ы его не запускают. Публикации идут по одной
+(`concurrency: publish`), чтобы `latest` указывал на последний push.
+
+Сервера пока нет, поэтому автоматического развёртывания (CD) нет. Когда
+появится VM, задача деплоя добавится в `publish.yml` после публикации.
+
+Новая функциональность должна проходить Test. Если меняешь способ запуска,
+порты, логин или healthcheck, обнови смоук-тест в задаче `stack`. Имя
+workflow `Test` используется в `publish.yml` — переименовываешь одно, меняй и
+другое.
+
 ## Архитектурные инварианты
 
 Не нарушай их без явного решения автора; если задача их затрагивает, сначала
