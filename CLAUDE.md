@@ -121,7 +121,8 @@ pnpm format     # oxfmt
 
 Два workflow в `.github/workflows/`:
 
-**`test.yml` (Test)** — на каждый pull request, на push в `main` и вручную:
+**`test.yml` (Test)** — на push в любую ветку и вручную (отдельного триггера
+`pull_request` нет: PR показывает статусы push-прогонов своей ветки):
 
 - `api` — `pytest` на Python 3.12 с сервисом PostgreSQL 16, включая проверку
   миграций на PostgreSQL (`SLEEP_TEST_DATABASE_URL`);
@@ -136,7 +137,8 @@ pnpm format     # oxfmt
 `ghcr.io/uni-999/sleep-api` и `ghcr.io/uni-999/sleep-web` с тегами
 `<12 символов SHA>` и `latest`. Право `packages: write` есть только у этого
 workflow; pull request'ы его не запускают. Публикации идут по одной
-(`concurrency: publish`), чтобы `latest` указывал на последний push.
+(`concurrency: publish`), чтобы `latest` указывал на последний push. Push в другие ветки
+только тестируется, образы из них не публикуются.
 
 Сервера пока нет, поэтому автоматического развёртывания (CD) нет. Когда
 появится VM, задача деплоя добавится в `publish.yml` после публикации.

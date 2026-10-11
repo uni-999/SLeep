@@ -1,9 +1,11 @@
 name: Test
 
 on:
+  # Every push to any branch of this repository is tested. Pull requests show
+  # these push runs as their checks, so there is no separate pull_request
+  # trigger that would run the same commit twice. Tag pushes are not tested.
   push:
-    branches: [main]
-  pull_request:
+    branches: ["**"]
   workflow_dispatch:
 
 permissions:
@@ -11,7 +13,7 @@ permissions:
 
 concurrency:
   group: test-${{ github.ref }}
-  # A newer push to the same branch or pull request makes older runs useless.
+  # A newer push to the same branch makes older runs of that branch useless.
   # Publishing lives in publish.yml, so cancelling a test run never interrupts it.
   cancel-in-progress: true
 
