@@ -12,7 +12,10 @@ COPY src ./src
 COPY migrations ./migrations
 COPY docker-entrypoint.sh ./docker-entrypoint.sh
 RUN pip install --no-cache-dir .
-RUN chmod +x ./docker-entrypoint.sh
+# COPY keeps host file modes. The service runs as the unprivileged "sleep"
+# user, so make sure every copied file is readable regardless of how it was
+# created on the host (for example with mode 600).
+RUN chmod -R a+rX /app && chmod 755 ./docker-entrypoint.sh
 
 USER sleep
 

@@ -6,6 +6,8 @@ services:
     restart: unless-stopped
     environment:
       APP_HOST: ${APP_HOST:-http://localhost}
+      BASIC_AUTH_USER: ${BASIC_AUTH_USER:?Set BASIC_AUTH_USER in .env}
+      BASIC_AUTH_HASH: ${BASIC_AUTH_HASH:?Set BASIC_AUTH_HASH in .env (see docs/self-hosting.md)}
     ports:
       - "${HTTP_PORT:-8080}:80"
       - "${HTTPS_PORT:-8443}:443"
@@ -28,6 +30,8 @@ services:
   web:
     build:
       context: ./apps/web
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org/}
     restart: unless-stopped
     expose:
       - "80"
@@ -46,7 +50,7 @@ services:
       SLEEP_DB_PORT: "5432"
       SLEEP_DB_NAME: ${POSTGRES_DB:-sleep}
       SLEEP_DB_USER: ${POSTGRES_USER:-sleep}
-      SLEEP_DB_PASSWORD: ${POSTGRES_PASSWORD:-sleep}
+      SLEEP_DB_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       SLEEP_SEED_DEMO: ${SLEEP_SEED_DEMO:-false}
     expose:
       - "8000"
@@ -64,7 +68,7 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-sleep}
       POSTGRES_USER: ${POSTGRES_USER:-sleep}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sleep}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sleep} -d ${POSTGRES_DB:-sleep}"]
       interval: 5s

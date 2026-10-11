@@ -21,5 +21,6 @@ cp .env.example .env
 docker compose up --build -d
 ```
 
-Open `http://localhost:8080`. Deployment and custom-domain instructions are in
+Open `http://localhost:8080` and sign in as `analyst` / `sleep-local`. Deployment,
+production secrets, and custom-domain instructions are in
 [`docs/self-hosting.md`](docs/self-hosting.md).

@@ -38,8 +38,6 @@ def seed_demo(session: Session) -> bool:
         address="10.24.3.18",
         status="online",
         risk_score=78,
-        cve_count=1,
-        critical_cve_count=1,
         last_seen_at=now - timedelta(seconds=18),
     )
     database_device = DeviceRecord(
@@ -51,8 +49,6 @@ def seed_demo(session: Session) -> bool:
         address="10.24.8.4",
         status="online",
         risk_score=41,
-        cve_count=0,
-        critical_cve_count=0,
         last_seen_at=now - timedelta(seconds=31),
     )
     session.add(organization)

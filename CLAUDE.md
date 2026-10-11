@@ -28,11 +28,11 @@ SLeep — учебный проект для выпускной квалифик
 
 ## Текущее состояние
 
-- **`main`** — веб-интерфейс и API на демо-данных в памяти
-  (`services/api/src/sleep_api/repository.py`, класс `DemoRepository`).
-- **`feature/postgres-persistence`** — PostgreSQL, SQLAlchemy, Alembic
-  (миграции `0001`–`0003`), seed, `/ready`, тесты на изоляцию организаций.
-  **Ещё не влита в `main`.** Новую работу с бэкендом веди поверх этой ветки.
+- **API** хранит данные в PostgreSQL: SQLAlchemy, Alembic (миграции
+  `0001`–`0004`), seed демо-данных по флагу, `/ready`, тесты на изоляцию
+  организаций. Ветка `feature/postgres-persistence` влита в `main` (PR #1).
+- **Доступ к сайту** закрыт HTTP basic auth в Caddy (локально
+  `analyst` / `sleep-local`) — временно, до настоящей аутентификации.
 - **Агент на Go** (`agent/`) — не начат: в репозитории только пустые каталоги.
 - **Обработка данных** (сопоставление CVE, кластеризация событий, расчёт риска,
   план исправлений) — не начата.
@@ -56,14 +56,15 @@ services/api/          FastAPI
   src/sleep_api/
     main.py            Маршруты и зависимости
     models.py          Pydantic-модели — контракт API
-    db_models.py       SQLAlchemy-модели (ветка feature/postgres-persistence)
-    repository.py      Доступ к данным
-    database.py        Engine и сессии (feature)
-    seed.py            Демо-данные (feature)
-  migrations/          Alembic (feature)
+    db_models.py       SQLAlchemy-модели
+    repository.py      Доступ к данным (SqlRepository)
+    database.py        Engine и сессии
+    seed.py            Демо-данные
+  migrations/          Alembic
   tests/               pytest
 deploy/Caddyfile       Единая точка входа: / → web, /api/* → api
-compose.yaml           gateway (Caddy), web (nginx), api, postgres (feature)
+compose.yaml           gateway (Caddy), web (nginx), api, postgres
+compose.dev.yaml       Только для разработки: PostgreSQL на 127.0.0.1:5432
 docs/                  Документация продукта
 ```
 
@@ -73,9 +74,13 @@ docs/                  Документация продукта
 
 ```bash
 cp .env.example .env
-docker compose up --build -d      # http://localhost:8080, API: /api/docs
+docker compose up --build -d      # http://localhost:8080 (analyst / sleep-local), API: /api/docs
 docker compose down
 ```
+
+Без `POSTGRES_PASSWORD`, `BASIC_AUTH_USER` и `BASIC_AUTH_HASH` в `.env` стек не
+запустится — так задумано. Хеш пароля в `.env` держи в одинарных кавычках:
+иначе Compose съест символы `$`.
 
 API (из `services/api`, нужен Python 3.12+):
 
@@ -86,9 +91,10 @@ pytest                             # unit-тесты и проверка миг�
 uvicorn sleep_api.main:app --reload
 ```
 
-На ветке с PostgreSQL дополнительно:
+Работа с БД (в основном compose PostgreSQL наружу не публикуется):
 
 ```bash
+docker compose -f compose.yaml -f compose.dev.yaml up -d postgres   # БД на 127.0.0.1:5432
 export SLEEP_DATABASE_URL='postgresql+psycopg://sleep:sleep@localhost:5432/sleep'
 alembic upgrade head
 python -m sleep_api.seed
@@ -96,7 +102,10 @@ alembic revision -m "описание"     # новая миграция, имя
 SLEEP_TEST_DATABASE_URL='postgresql+psycopg://…/test_db' pytest   # тест миграций на PostgreSQL
 ```
 
-Веб-интерфейс (из `apps/web`, Node 22.13+, pnpm):
+Веб-интерфейс (из `apps/web`, Node 22.13+, pnpm). Версия pnpm закреплена в
+`package.json` (`packageManager`), Dockerfile ставит именно её. Не убирай
+закрепление: без него в образ попадает самая новая pnpm, и сборка ломается.
+Обновляй версию осознанно, вместе с `pnpm-lock.yaml`.
 
 ```bash
 pnpm install
@@ -119,7 +128,8 @@ pnpm format     # oxfmt
    запрещала ссылки между организациями. Чужой объект в API — `404`, а не `403`.
 2. **`X-Organization-ID` — временная граница.** Это не аутентификация. Не строй
    на этом заголовке логику прав; в будущем организация и роль будут браться из
-   проверенного токена.
+   проверенного токена. Пока её нет, весь сайт (включая `/api`) должен оставаться
+   за `basic_auth` в `deploy/Caddyfile` — не убирай и не ослабляй его.
 3. **Никакого удалённого управления хостами.** Платформа отправляет агенту
    только декларативные задания из разрешённого списка (сейчас `probe = "safe"`),
    никогда — произвольные команды.
@@ -129,7 +139,11 @@ pnpm format     # oxfmt
    возвращает причины и ссылки на доказательства.
 6. **Доказательства не теряются.** Событие хранит `raw_record_refs`; CVE-находка
    хранит `evidence`.
-7. **Внешние и внутренние ID.** В БД — UUID; в API — внешние идентификаторы
+7. **Производные значения не храним.** Счётчики CVE устройства
+   (`cve_count`, `critical_cve_count`) вычисляются запросом из `cve_findings`
+   (`SqlRepository._devices_with_cve_counts`). Не возвращай их в таблицу
+   `devices`. `risk_score` пока хранится и будет записываться движком риска.
+8. **Внешние и внутренние ID.** В БД — UUID; в API — внешние идентификаторы
    (`prod-web-01`, `evt-01842`, `CVE-2024-6387`, `INC-0001`). Внутренние UUID
    наружу не отдаются.
 
@@ -202,9 +216,8 @@ pnpm format     # oxfmt
 
 ## Ближайшие задачи
 
-1. Влить `feature/postgres-persistence` в `main`.
-2. Реализовать расследование инцидентов по `docs/incident-investigation.md`
+1. Реализовать расследование инцидентов по `docs/incident-investigation.md`
    (раздел «Этапы реализации»).
-3. Подключить веб-интерфейс к API вместо захардкоженных данных.
-4. Начать Go-агента: сбор пакетов и ОС, отправка снимка инвентаризации.
-5. Сопоставление пакетов с CVE (Ubuntu/Debian на первом шаге) и расчёт риска.
+2. Подключить веб-интерфейс к API вместо захардкоженных данных.
+3. Начать Go-агента: сбор пакетов и ОС, отправка снимка инвентаризации.
+4. Сопоставление пакетов с CVE (Ubuntu/Debian на первом шаге) и расчёт риска.

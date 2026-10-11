@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import Select, case, func, select
 from sqlalchemy.orm import Session
 
 from .db_models import CveFindingRecord, DeviceRecord, ProbeJobRecord, SecurityEventRecord
@@ -22,16 +22,19 @@ class SqlRepository:
         self.session = session
 
     def list_devices(self, organization_id: str) -> list[Device]:
-        records = self.session.scalars(
-            select(DeviceRecord)
-            .where(DeviceRecord.organization_id == organization_id)
-            .order_by(DeviceRecord.name)
+        rows = self.session.execute(
+            self._devices_with_cve_counts(organization_id).order_by(DeviceRecord.name)
         ).all()
-        return [self._device(record) for record in records]
+        return [self._device(record, cve_count, critical_count) for record, cve_count, critical_count in rows]
 
     def get_device(self, organization_id: str, device_id: str) -> Device | None:
-        record = self._device_record(organization_id, device_id)
-        return self._device(record) if record else None
+        row = self.session.execute(
+            self._devices_with_cve_counts(organization_id).where(DeviceRecord.external_id == device_id)
+        ).first()
+        if row is None:
+            return None
+        record, cve_count, critical_count = row
+        return self._device(record, cve_count, critical_count)
 
     def list_cves(
         self,
@@ -148,7 +151,36 @@ class SqlRepository:
         )
 
     @staticmethod
-    def _device(record: DeviceRecord) -> Device:
+    def _devices_with_cve_counts(organization_id: str) -> Select:
+        """Select tenant devices with CVE counters derived from cve_findings.
+
+        Counters are never stored on the device row, so they cannot drift from
+        the findings they summarize.
+        """
+        counts = (
+            select(
+                CveFindingRecord.device_id.label("device_id"),
+                func.count(CveFindingRecord.id).label("cve_count"),
+                func.sum(
+                    case((CveFindingRecord.severity == Severity.CRITICAL.value, 1), else_=0)
+                ).label("critical_cve_count"),
+            )
+            .where(CveFindingRecord.organization_id == organization_id)
+            .group_by(CveFindingRecord.device_id)
+            .subquery()
+        )
+        return (
+            select(
+                DeviceRecord,
+                func.coalesce(counts.c.cve_count, 0),
+                func.coalesce(counts.c.critical_cve_count, 0),
+            )
+            .outerjoin(counts, counts.c.device_id == DeviceRecord.id)
+            .where(DeviceRecord.organization_id == organization_id)
+        )
+
+    @staticmethod
+    def _device(record: DeviceRecord, cve_count: int, critical_cve_count: int) -> Device:
         return Device(
             id=record.external_id,
             organization_id=record.organization_id,
@@ -158,8 +190,8 @@ class SqlRepository:
             address=record.address,
             status=DeviceStatus(record.status),
             risk_score=record.risk_score,
-            cve_count=record.cve_count,
-            critical_cve_count=record.critical_cve_count,
+            cve_count=int(cve_count),
+            critical_cve_count=int(critical_cve_count),
             last_seen_at=record.last_seen_at,
         )
 

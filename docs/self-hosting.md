@@ -11,9 +11,14 @@ cp .env.example .env
 docker compose up --build -d
 ```
 
-Open `http://localhost:8080`. The API health endpoint is available at
+Open `http://localhost:8080` and sign in as `analyst` / `sleep-local` (the local
+credentials from `.env.example`). The API health endpoint is available at
 `http://localhost:8080/api/health`, and its OpenAPI UI is at
-`http://localhost:8080/api/docs`.
+`http://localhost:8080/api/docs`; both are behind the same login, for example
+`curl -u analyst:sleep-local http://localhost:8080/api/health`.
+
+The stack refuses to start when `.env` does not define `POSTGRES_PASSWORD`,
+`BASIC_AUTH_USER`, or `BASIC_AUTH_HASH`.
 
 Set `SLEEP_SEED_DEMO=true` in `.env` before the first start when sample devices,
 events, and CVE findings are useful. With the default `false`, the database starts
@@ -33,13 +38,25 @@ and inbound TCP ports 80 and 443. UDP 443 is optional but enables HTTP/3.
 
 1. Point the domain's A and, if used, AAAA records to the VM.
 2. Copy the repository to the VM and create `.env` from `.env.example`.
-3. Set the public hostname and standard ports:
+3. Set the public hostname, standard ports, and new secrets:
 
 ```dotenv
 APP_HOST=app.example.by
 HTTP_PORT=80
 HTTPS_PORT=443
+POSTGRES_PASSWORD=replace-with-a-long-random-secret
+BASIC_AUTH_USER=replace-with-a-login
+BASIC_AUTH_HASH='$2a$14$...'
 ```
+
+   Generate the password hash with Caddy and keep it in single quotes, because
+   Compose would otherwise treat the `$` characters as variable references:
+
+```bash
+docker run --rm caddy:2-alpine caddy hash-password --plaintext 'your-password'
+```
+
+   Never reuse the local `.env.example` values on a public host.
 
 4. Start the stack:
 
@@ -52,10 +69,42 @@ published under the same origin at `/api`; its container and PostgreSQL are not
 exposed directly. Alembic migrations run before every API start and PostgreSQL
 data is retained in the `postgres_data` Docker volume.
 
+## Troubleshooting the web image build
+
+`pnpm install` inside the web image downloads about 440 packages from
+`registry.npmjs.org`. On an unstable connection a single request can fail with
+`ETIMEDOUT`. The build already retries with long timeouts and keeps downloaded
+packages in a BuildKit cache, so running the same command again continues from
+where it stopped:
+
+```bash
+docker compose build web
+```
+
+If downloads keep timing out, check that containers reach the registry:
+
+```bash
+docker run --rm node:22-alpine npm view pnpm@10.34.5 version
+```
+
+When they do not, route Docker Desktop through your VPN or proxy
+(Settings → Resources → Proxies), or set `NPM_REGISTRY` in `.env` to an
+npm-compatible mirror. The lockfile pins integrity hashes, so a mirror cannot
+substitute package contents.
+
+## Access boundary
+
+The API does not authenticate users yet: it trusts the `X-Organization-ID`
+header to select the tenant. HTTP basic authentication in Caddy therefore guards
+the whole site, including `/api`, so anonymous clients cannot read any tenant's
+data. Everyone who knows the shared login can still choose any organization, so
+this is suitable for a single-team demo only. Real authentication will derive the
+tenant and role from verified identity claims and replace this boundary.
+
 ## Current boundary
 
 The local stack seeds a demo organization when `SLEEP_SEED_DEMO=true`. Disable
-it and replace the default database password before production deployment. Demo
+it before production deployment. Demo
 seeding is disabled by default; enable it explicitly only for a local preview. The
 event queue, object storage, authentication, and separate agent mTLS gateway
 belong to the next backend slices. The future `ingest` endpoint should be
