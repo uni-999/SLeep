@@ -3,6 +3,8 @@
 import os
 from dataclasses import dataclass, field
 
+from . import __version__
+
 
 KNOWN_SOURCES = ("osv-debian", "osv-ubuntu", "epss", "kev")
 
@@ -25,7 +27,7 @@ DEFAULT_INTERVAL_MINUTES = {
     "kev": 6 * 60,
 }
 
-USER_AGENT = "SLeep-vulndb/0.1 (+https://github.com/uni-999/SLeep)"
+USER_AGENT = f"SLeep-vulndb/{__version__} (+https://github.com/uni-999/SLeep)"
 
 
 class ConfigurationError(ValueError):
@@ -46,6 +48,12 @@ class Settings:
     kev_url: str = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
     interval_minutes: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_INTERVAL_MINUTES))
     retry_minutes: int = 15
+    # A single run longer than this marks the container unhealthy (a hung sync).
+    # The first full OSV download is the longest run; keep a wide margin.
+    max_sync_minutes: int = 120
+    # Finished sync_runs entries older than this are deleted. Feed freshness
+    # lives in feed_state, so the journal only needs recent history.
+    run_retention_days: int = 90
     http_timeout_seconds: float = 60.0
     http_retries: int = 3
     http_backoff_seconds: float = 2.0
@@ -72,6 +80,8 @@ class Settings:
             kev_url=_text("SLEEP_VULNDB_KEV_URL", defaults.kev_url),
             interval_minutes=intervals,
             retry_minutes=_positive_int("SLEEP_VULNDB_RETRY_MINUTES", defaults.retry_minutes),
+            max_sync_minutes=_positive_int("SLEEP_VULNDB_MAX_SYNC_MINUTES", defaults.max_sync_minutes),
+            run_retention_days=_positive_int("SLEEP_VULNDB_RUN_RETENTION_DAYS", defaults.run_retention_days),
             http_timeout_seconds=float(_positive_int("SLEEP_VULNDB_HTTP_TIMEOUT_SECONDS", 60)),
             proxy_url=os.getenv("SLEEP_VULNDB_PROXY_URL") or None,
             heartbeat_path=_text("SLEEP_VULNDB_HEARTBEAT_PATH", defaults.heartbeat_path),

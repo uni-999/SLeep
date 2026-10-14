@@ -111,6 +111,8 @@ class FakeFeeds:
 
     routes: dict[str, Callable[[httpx.Request], httpx.Response]] = field(default_factory=dict)
     requests: list[httpx.Request] = field(default_factory=list)
+    # Called on every request, before it is answered.
+    observers: list[Callable[[httpx.Request], None]] = field(default_factory=list)
 
     def serve(self, url: str, body: bytes | str, *, etag: str | None = None, status: int = 200) -> None:
         content = body.encode() if isinstance(body, str) else body
@@ -128,6 +130,8 @@ class FakeFeeds:
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
+        for observer in self.observers:
+            observer(request)
         handler = self.routes.get(str(request.url))
         return handler(request) if handler else httpx.Response(404)
 

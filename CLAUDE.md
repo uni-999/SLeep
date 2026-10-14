@@ -73,7 +73,7 @@ services/vulndb/       Обновление базы знаний об уязв�
   src/sleep_vulndb/
     cli.py             Команды run, sync, status, lookup, health
     scheduler.py       Цикл обновления по интервалам, пульс для healthcheck
-    sync.py            Запуск источника: одна транзакция, журнал sync_runs, блокировка
+    sync.py            Запуск источника: одна транзакция (сеть — до неё), журнал sync_runs, блокировка
     sources/           osv.py (Debian, Ubuntu), epss.py, kev.py
     http.py            Скачивание: условные запросы, повторы, лимит размера
     lookup.py          Какие CVE затрагивают версию пакета
@@ -83,7 +83,8 @@ services/vulndb/       Обновление базы знаний об уязв�
   migrations/          Alembic, версия в vulndb.alembic_version
   tests/               pytest; источники подменяются фейковым HTTP
 deploy/Caddyfile       Единая точка входа: / → web, /api/* → api
-compose.yaml           gateway (Caddy), web (nginx), api, vulndb, postgres
+deploy/postgres/vulndb-role.sql  Роль sleep_vulndb: владеет только схемой vulndb
+compose.yaml           gateway (Caddy), web (nginx), api, vulndb, vulndb-init (создаёт роль), postgres
 compose.dev.yaml       Только для разработки: PostgreSQL на 127.0.0.1:5432
 docs/                  Документация продукта
 ```
@@ -98,9 +99,9 @@ docker compose up --build -d      # http://localhost:8080 (analyst / sleep-local
 docker compose down
 ```
 
-Без `POSTGRES_PASSWORD`, `BASIC_AUTH_USER` и `BASIC_AUTH_HASH` в `.env` стек не
-запустится — так задумано. Хеш пароля в `.env` держи в одинарных кавычках:
-иначе Compose съест символы `$`.
+Без `POSTGRES_PASSWORD`, `VULNDB_DB_PASSWORD`, `BASIC_AUTH_USER` и
+`BASIC_AUTH_HASH` в `.env` стек не запустится — так задумано. Хеш пароля в
+`.env` держи в одинарных кавычках: иначе Compose съест символы `$`.
 
 API (из `services/api`, нужен Python 3.12+):
 
@@ -128,9 +129,9 @@ SLEEP_TEST_DATABASE_URL='postgresql+psycopg://…/test_db' pytest   # тест �
 python -m venv .venv && . .venv/bin/activate
 pip install -e '.[dev]'
 pytest                             # SQLite; HTTP-источники подменены, интернет не нужен
-SLEEP_TEST_DATABASE_URL='postgresql+psycopg://…/test_db' pytest   # + PostgreSQL
+SLEEP_TEST_DATABASE_URL='postgresql+psycopg://…/test_db' pytest   # + PostgreSQL (суперпользователь; для test_role.py нужен psql)
 sleep-vulndb sync --source kev     # разовое обновление (нужен интернет)
-sleep-vulndb status
+sleep-vulndb status                # источники и последний запуск каждого; --runs N — журнал
 sleep-vulndb lookup --ecosystem Ubuntu:22.04:LTS --package openssh --version 1:8.9p1-3ubuntu0.6
 docker compose exec vulndb sleep-vulndb status   # в запущенном стеке
 ```
@@ -160,13 +161,16 @@ pnpm format     # oxfmt
 - `api` — `pytest` на Python 3.12 с сервисом PostgreSQL 16, включая проверку
   миграций на PostgreSQL (`SLEEP_TEST_DATABASE_URL`);
 - `vulndb` — `pytest` сервиса базы уязвимостей на Python 3.12 с PostgreSQL 16
-  (миграции в схеме `vulndb`, синхронизация, блокировки); интернет не нужен;
+  (миграции в схеме `vulndb`, синхронизация, блокировки, роль `sleep_vulndb`
+  через `psql`); интернет не нужен;
 - `web` — `pnpm install --frozen-lockfile`, `pnpm lint`, `pnpm build`;
 - `stack` — после `api`, `vulndb` и `web`: собирает весь `docker compose` с
   демо-данными и `SLEEP_VULNDB_SOURCES=none` (без внешних источников), ждёт
   `healthy` и проверяет через шлюз, что без логина отвечает `401`, а с логином
   открываются интерфейс, `/api/health`, `/api/ready` и устройства; затем
-  проверяет `sleep-vulndb status` и `health` внутри контейнера.
+  проверяет `sleep-vulndb status` и `health` внутри контейнера и что роль
+  `sleep_vulndb` — не суперпользователь, владеет схемой `vulndb` и не читает
+  таблицы API.
 
 **`publish.yml` (Publish)** — запускается событием `workflow_run`, когда Test
 успешно завершился на push в `main`. Публикует ровно протестированный коммит
@@ -218,11 +222,15 @@ workflow `Test` используется в `publish.yml` — переимено
 9. **Выход в интернет — только у `vulndb`.** Он подключён к сети `egress`;
    API, PostgreSQL и веб остаются во внутренней сети `backend`. Новые внешние
    источники данных добавляются в `vulndb` (интерфейс `FeedSource`), а не в API.
+   В БД `vulndb` работает под ролью `sleep_vulndb`, которой принадлежит только
+   схема `vulndb`; не давай ей прав на `public` и не подключай его под
+   владельцем БД.
 10. **База знаний — общая и отдельная.** Таблицы `vulndb.*` — справочные данные
     для всех организаций, без `organization_id`; данные организаций туда не
     пишутся. У схемы своя история Alembic; таблицы API в `public` её не
     касаются, и наоборот. Обновление источника атомарно: данные, курсор и
-    запись журнала фиксируются одной транзакцией.
+    запись журнала фиксируются одной транзакцией. Сетевые запросы к
+    источникам выполняются до её начала, а не внутри.
 
 ## Соглашения по коду
 

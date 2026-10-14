@@ -1,6 +1,6 @@
 import pytest
 
-from sleep_vulndb.debversion import DebianVersion, InvalidVersion, compare_versions
+from sleep_vulndb.debversion import DebianVersion, InvalidVersion
 
 
 @pytest.mark.parametrize(
@@ -26,11 +26,10 @@ from sleep_vulndb.debversion import DebianVersion, InvalidVersion, compare_versi
         ("7.81.0-1ubuntu1.16", "7.81.0-1ubuntu1.4", 1),
     ],
 )
-def test_compare_versions_matches_dpkg(left: str, right: str, expected: int) -> None:
-    result = compare_versions(left, right)
-    assert (result > 0) - (result < 0) == expected
-    reverse = compare_versions(right, left)
-    assert (reverse > 0) - (reverse < 0) == -expected
+def test_comparison_matches_dpkg(left: str, right: str, expected: int) -> None:
+    first, second = DebianVersion(left), DebianVersion(right)
+    assert ((first > second) - (first < second), (second > first) - (second < first)) == (expected, -expected)
+    assert (first == second) is (expected == 0)
 
 
 def test_versions_sort_like_dpkg() -> None:
@@ -39,7 +38,37 @@ def test_versions_sort_like_dpkg() -> None:
     assert ordered == ["0.9", "1.0~beta", "1.0", "1.0-1", "1.0+b1", "1:0.9"]
 
 
-@pytest.mark.parametrize("text", ["", "   ", "abc", "x:1.0", "1:"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",
+        "   ",
+        "abc",  # must start with a digit
+        "x:1.0",  # epoch is not a number
+        ":1.0",  # empty epoch
+        "99999999999:1.0",  # epoch too big
+        "1:",  # nothing after the epoch
+        "1.0-",  # empty revision
+        "1.0 2",  # embedded space
+        "1.0_1",  # "_" is not allowed in the upstream version
+        "1.0-a_b",  # nor in the revision
+        "1.0-1:2",  # ":" is not allowed in the revision
+        "1.0²",  # only ASCII digits
+    ],
+)
 def test_invalid_versions_are_rejected(text: str) -> None:
     with pytest.raises(InvalidVersion):
         DebianVersion(text)
+
+
+@pytest.mark.parametrize("text", ["1:2:3", "1.0--1", "1.0-+", " 1.0 ", "1.0~-1"])
+def test_unusual_versions_accepted_by_dpkg_are_valid(text: str) -> None:
+    DebianVersion(text)
+
+
+def test_versions_are_not_hashable() -> None:
+    # "1.0", "0:1.0" and "1.0-0" are equal, so hashing the text would put
+    # equal versions into different buckets.
+    assert DebianVersion("1.0") == DebianVersion("0:1.0") == DebianVersion("1.0-0")
+    with pytest.raises(TypeError):
+        hash(DebianVersion("1.0"))

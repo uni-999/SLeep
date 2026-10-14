@@ -18,7 +18,9 @@ credentials from `.env.example`). The API health endpoint is available at
 `curl -u analyst:sleep-local http://localhost:8080/api/health`.
 
 The stack refuses to start when `.env` does not define `POSTGRES_PASSWORD`,
-`BASIC_AUTH_USER`, or `BASIC_AUTH_HASH`.
+`VULNDB_DB_PASSWORD`, `BASIC_AUTH_USER`, or `BASIC_AUTH_HASH`. An `.env`
+created before the vulnerability database got its own role lacks
+`VULNDB_DB_PASSWORD`: copy that line from `.env.example`.
 
 Set `SLEEP_SEED_DEMO=true` in `.env` before the first start when sample devices,
 events, and CVE findings are useful. With the default `false`, the database starts
@@ -45,6 +47,7 @@ APP_HOST=app.example.by
 HTTP_PORT=80
 HTTPS_PORT=443
 POSTGRES_PASSWORD=replace-with-a-long-random-secret
+VULNDB_DB_PASSWORD=replace-with-another-long-random-secret
 BASIC_AUTH_USER=replace-with-a-login
 BASIC_AUTH_HASH='$2a$14$...'
 ```
@@ -102,10 +105,21 @@ HTTPS access to `osv-vulnerabilities.storage.googleapis.com`,
 a few minutes; after that only changes are fetched.
 
 ```bash
-docker compose exec vulndb sleep-vulndb status        # freshness of every source
+docker compose exec vulndb sleep-vulndb status        # freshness and last run of every source
+docker compose exec vulndb sleep-vulndb status --runs 20   # recent run journal
 docker compose exec vulndb sleep-vulndb sync --full   # reload everything now
 docker compose logs -f vulndb
 ```
+
+The updater connects to PostgreSQL as its own role `sleep_vulndb`, with the
+password `VULNDB_DB_PASSWORD`. The role owns the `vulndb` schema and nothing
+else: it is not a superuser and cannot read the API's tables. The one-shot
+`vulndb-init` service creates or updates the role as the database owner
+(`deploy/postgres/vulndb-role.sql`) on every start, before `vulndb` starts, so
+the owner's password never reaches the internet-facing container. On an
+existing installation it also hands over the `vulndb` tables that earlier
+versions created as the owner. Changing `VULNDB_DB_PASSWORD` in `.env` takes
+effect on the next `docker compose up -d`.
 
 If the feeds are reachable only through a proxy, set `SLEEP_VULNDB_PROXY_URL`
 in `.env`. `SLEEP_VULNDB_SOURCES=none` keeps the service idle, for example on a

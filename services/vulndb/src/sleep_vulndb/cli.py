@@ -6,18 +6,25 @@ import signal
 import sys
 import threading
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import ColumnElement, func, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from .config import KNOWN_SOURCES, ConfigurationError, Settings
 from .database import default_sessions
-from .db_models import AdvisoryRecord, AffectedPackageRecord, EpssScoreRecord, FeedStateRecord, KevEntryRecord
+from .db_models import (
+    AdvisoryRecord,
+    AffectedPackageRecord,
+    EpssScoreRecord,
+    FeedStateRecord,
+    KevEntryRecord,
+    SyncRunRecord,
+)
 from .debversion import InvalidVersion
 from .http import FeedHttp
 from .lookup import find_affecting
-from .scheduler import heartbeat_is_fresh, run_forever
+from .scheduler import heartbeat_problem, run_forever
 from .sync import run_source
 from .timeutil import as_utc
 
@@ -33,7 +40,9 @@ def build_parser() -> argparse.ArgumentParser:
                       help="source to sync (repeatable); default: SLEEP_VULNDB_SOURCES")
     sync.add_argument("--full", action="store_true", help="ignore cursors and HTTP validators, reload everything")
 
-    commands.add_parser("status", help="show the state of every source")
+    status = commands.add_parser("status", help="show the state of every source and its recent runs")
+    status.add_argument("--runs", type=_positive_int, metavar="N",
+                        help="show the N most recent journal entries instead of the last run of each source")
 
     lookup = commands.add_parser("lookup", help="list vulnerabilities affecting one package version")
     lookup.add_argument("--ecosystem", required=True, help='OSV ecosystem, e.g. "Ubuntu:22.04:LTS" or "Debian:12"')
@@ -60,7 +69,7 @@ def main(argv: Sequence[str] | None = None, sessions: sessionmaker[Session] | No
         case "sync":
             return _sync(settings, sessions, arguments.source or list(settings.sources), arguments.full)
         case "status":
-            return _status(settings, sessions)
+            return _status(settings, sessions, arguments.runs)
         case "lookup":
             return _lookup(sessions, arguments.ecosystem, arguments.package, arguments.version)
         case "health":
@@ -95,7 +104,7 @@ def _sync(settings: Settings, sessions: sessionmaker[Session], sources: list[str
     return 0 if all(result.ok for result in results) else 1
 
 
-def _status(settings: Settings, sessions: sessionmaker[Session]) -> int:
+def _status(settings: Settings, sessions: sessionmaker[Session], recent: int | None = None) -> int:
     with sessions() as session:
         states = {state.source: state for state in session.scalars(select(FeedStateRecord))}
         counts = {
@@ -105,6 +114,17 @@ def _status(settings: Settings, sessions: sessionmaker[Session]) -> int:
             "kev": _count(session, KevEntryRecord),
         }
         affected = _count(session, AffectedPackageRecord)
+        if recent is None:
+            last_runs = [
+                session.scalars(
+                    select(SyncRunRecord).where(SyncRunRecord.source == name)
+                    .order_by(SyncRunRecord.started_at.desc()).limit(1)
+                ).first()
+                for name in KNOWN_SOURCES
+            ]
+            runs = [run for run in last_runs if run is not None]
+        else:
+            runs = list(session.scalars(select(SyncRunRecord).order_by(SyncRunRecord.started_at.desc()).limit(recent)))
 
     print(f"{'source':<11} {'enabled':<8} {'records':>8}  {'last success':<20} {'cursor':<20} failures  last error")
     for name in KNOWN_SOURCES:
@@ -115,6 +135,20 @@ def _status(settings: Settings, sessions: sessionmaker[Session]) -> int:
             f"{state.consecutive_failures if state else 0:>8}  {(state.last_error or '') if state else ''}"
         )
     print(f"\naffected package intervals: {affected}")
+
+    print("\n" + ("last run of each source:" if recent is None else "run journal, newest first:"))
+    if not runs:
+        print("  none yet")
+        return 0
+    print(f"{'source':<11} {'started':<20} {'mode':<11} {'status':<13} {'duration':>8} {'written':>8} "
+          f"{'deleted':>8}  error")
+    now = datetime.now(UTC)
+    for run in runs:
+        print(
+            f"{run.source:<11} {_when(run.started_at):<20} {run.mode or '-':<11} {run.status:<13} "
+            f"{_duration(run.started_at, run.finished_at, now):>8} {run.records_written:>8} "
+            f"{run.records_deleted:>8}  {_shorten(run.error)}"
+        )
     return 0
 
 
@@ -139,8 +173,13 @@ def _lookup(sessions: sessionmaker[Session], ecosystem: str, package: str, versi
 
 
 def _health(settings: Settings, sessions: sessionmaker[Session]) -> int:
-    if not heartbeat_is_fresh(settings.heartbeat_path):
-        print("unhealthy: the updater loop heartbeat is missing or stale", file=sys.stderr)
+    problem = heartbeat_problem(
+        settings.heartbeat_path,
+        tick_seconds=settings.tick_seconds,
+        max_sync_minutes=settings.max_sync_minutes,
+    )
+    if problem:
+        print(f"unhealthy: {problem}", file=sys.stderr)
         return 1
     try:
         with sessions() as session:
@@ -154,6 +193,33 @@ def _health(settings: Settings, sessions: sessionmaker[Session]) -> int:
 
 def _count(session: Session, model: type, *conditions: ColumnElement[bool]) -> int:
     return session.scalar(select(func.count()).select_from(model).where(*conditions)) or 0
+
+
+def _duration(started_at: datetime, finished_at: datetime | None, now: datetime) -> str:
+    """Run length; a run that is still going counts up to now."""
+    started = as_utc(started_at)
+    end = as_utc(finished_at) or now
+    assert started is not None
+    seconds = max(0, int((end - started).total_seconds()))
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m{seconds % 60:02d}s"
+    return f"{seconds // 3600}h{seconds % 3600 // 60:02d}m"
+
+
+def _shorten(text: str | None, limit: int = 100) -> str:
+    if not text:
+        return ""
+    line = " ".join(text.split())
+    return line if len(line) <= limit else line[: limit - 1] + "…"
+
+
+def _positive_int(value: str) -> int:
+    number = int(value)
+    if number <= 0:
+        raise argparse.ArgumentTypeError(f"must be positive, got {number}")
+    return number
 
 
 def _when(value: datetime | None) -> str:

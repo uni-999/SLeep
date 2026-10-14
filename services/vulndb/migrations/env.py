@@ -63,7 +63,12 @@ def run_migrations_online() -> None:
     with connectable.connect() as connection:
         if WITH_SCHEMAS:
             # The version table is created inside the schema, so it must exist first.
-            connection.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{SCHEMA}"'))
+            # In the Compose stack deploy/postgres/vulndb-role.sql has already created
+            # it for the service role, which may not create schemas: even
+            # CREATE SCHEMA IF NOT EXISTS needs that right, so check first.
+            exists = connection.scalar(text("SELECT 1 FROM pg_namespace WHERE nspname = :name"), {"name": SCHEMA})
+            if not exists:
+                connection.execute(text(f'CREATE SCHEMA "{SCHEMA}"'))
             connection.commit()
         configure(connection=connection)
         with context.begin_transaction():

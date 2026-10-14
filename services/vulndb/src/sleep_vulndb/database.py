@@ -7,8 +7,6 @@ so on SQLite (tests, quick local runs) the schema name is translated away.
 """
 
 import os
-from collections.abc import Generator
-from contextlib import contextmanager
 from functools import cache
 
 from sqlalchemy import URL, Engine, MetaData, create_engine, make_url
@@ -60,10 +58,3 @@ def default_engine() -> Engine:
 @cache
 def default_sessions() -> sessionmaker[Session]:
     return sessionmaker(bind=default_engine(), expire_on_commit=False)
-
-
-@contextmanager
-def session_scope(sessions: sessionmaker[Session] | None = None) -> Generator[Session, None, None]:
-    factory = sessions or default_sessions()
-    with factory() as session:
-        yield session

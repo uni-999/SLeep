@@ -38,6 +38,7 @@ def test_settings_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SLEEP_VULNDB_OSV_BASE_URL", "https://mirror.example/osv/")
     monkeypatch.setenv("SLEEP_VULNDB_KEV_INTERVAL_MINUTES", "30")
     monkeypatch.setenv("SLEEP_VULNDB_PROXY_URL", "http://proxy.example:3128")
+    monkeypatch.setenv("SLEEP_VULNDB_RUN_RETENTION_DAYS", "30")
 
     settings = Settings.from_env()
 
@@ -46,6 +47,7 @@ def test_settings_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.interval_minutes["kev"] == 30
     assert settings.interval_minutes["osv-ubuntu"] == 60
     assert settings.proxy_url == "http://proxy.example:3128"
+    assert settings.run_retention_days == 30
 
 
 def test_invalid_number_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:

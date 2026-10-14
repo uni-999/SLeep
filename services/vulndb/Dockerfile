@@ -17,9 +17,11 @@ RUN chmod -R a+rX /app && chmod 755 ./docker-entrypoint.sh
 
 USER sleep
 
-# The healthcheck only proves that the updater loop is alive and the database
-# answers. Feed freshness is reported by `sleep-vulndb status`, so a feed that
-# is temporarily unreachable never marks the container unhealthy.
+# The healthcheck reads the heartbeat that the updater loop itself writes: the
+# container turns unhealthy when the loop stops, or when one sync runs longer
+# than SLEEP_VULNDB_MAX_SYNC_MINUTES, or when the database does not answer.
+# Feed freshness is reported by `sleep-vulndb status`, so a feed that is
+# temporarily unreachable never marks the container unhealthy.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --start-interval=2s --retries=3 \
   CMD ["sleep-vulndb", "health"]
 

@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import delete, func, insert, select
+from sqlalchemy import delete, insert, select
 from sqlalchemy.orm import Session
 
 from ..cvss import VENDOR_SEVERITY, InvalidVector, base_score, severity_from_score
@@ -270,21 +270,30 @@ class OsvSource:
         if not changed:
             return SyncOutcome(mode=SyncMode.INCREMENTAL, status=SyncStatus.NOT_MODIFIED)
 
-        session = context.session
-        written = deleted = 0
+        # Download and parse every changed record before touching the database:
+        # up to osv_incremental_limit sequential requests (with retries) must
+        # not run inside the transaction. None means "delete": the record is
+        # gone (404) or no longer affects a configured release.
+        fetched: dict[str, ParsedAdvisory | None] = {}
         for record_id in changed:
-            existed = session.get(AdvisoryRecord, record_id) is not None
-            self._delete_ids(session, [record_id])
             record = context.http.get_json(self._url(context, f"{record_id}.json"))
-            parsed = self.parse(record, context.settings.osv_ecosystems) if record is not None else None
-            if parsed is None:
-                deleted += int(existed)
-                continue
-            _insert(session, [parsed])
-            written += 1
+            fetched[record_id] = self.parse(record, context.settings.osv_ecosystems) if record is not None else None
+        advisories = [item for item in fetched.values() if item is not None]
+
+        session = context.session
+        ids = list(fetched)
+        existing = set(session.scalars(select(AdvisoryRecord.id).where(AdvisoryRecord.id.in_(ids))))
+        self._delete_ids(session, ids)
+        for start in range(0, len(advisories), BATCH_SIZE):
+            _insert(session, advisories[start : start + BATCH_SIZE])
 
         context.state.cursor = max(changed.values())
-        return SyncOutcome(mode=SyncMode.INCREMENTAL, status=SyncStatus.SUCCEEDED, written=written, deleted=deleted)
+        return SyncOutcome(
+            mode=SyncMode.INCREMENTAL,
+            status=SyncStatus.SUCCEEDED,
+            written=len(advisories),
+            deleted=len(existing - {item.id for item in advisories}),
+        )
 
     def _delete_all(self, session: Session) -> None:
         source_ids = select(AdvisoryRecord.id).where(AdvisoryRecord.source == self.name)
@@ -296,10 +305,6 @@ class OsvSource:
         session.execute(delete(AffectedPackageRecord).where(AffectedPackageRecord.advisory_id.in_(ids)))
         session.execute(delete(AdvisoryRecord).where(AdvisoryRecord.id.in_(ids)))
         session.flush()
-
-
-def count_advisories(session: Session, source: str) -> int:
-    return session.scalar(select(func.count()).select_from(AdvisoryRecord).where(AdvisoryRecord.source == source)) or 0
 
 
 def _insert(session: Session, advisories: list[ParsedAdvisory]) -> None:

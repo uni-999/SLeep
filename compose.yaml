@@ -64,7 +64,8 @@ services:
 
   # Keeps the global vulnerability knowledge base (OSV Debian/Ubuntu, EPSS,
   # CISA KEV) up to date in the PostgreSQL schema "vulndb". It is the only
-  # service with outbound internet access and it accepts no inbound traffic.
+  # service with outbound internet access and it accepts no inbound traffic,
+  # so it connects under its own role that owns only that schema.
   vulndb:
     build:
       context: ./services/vulndb
@@ -73,14 +74,42 @@ services:
       SLEEP_DB_HOST: postgres
       SLEEP_DB_PORT: "5432"
       SLEEP_DB_NAME: ${POSTGRES_DB:-sleep}
-      SLEEP_DB_USER: ${POSTGRES_USER:-sleep}
-      SLEEP_DB_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      SLEEP_DB_USER: ${VULNDB_DB_USER:-sleep_vulndb}
+      SLEEP_DB_PASSWORD: ${VULNDB_DB_PASSWORD:?Set VULNDB_DB_PASSWORD in .env}
       SLEEP_VULNDB_SOURCES: ${SLEEP_VULNDB_SOURCES:-}
       SLEEP_VULNDB_OSV_ECOSYSTEMS: ${SLEEP_VULNDB_OSV_ECOSYSTEMS:-}
       SLEEP_VULNDB_PROXY_URL: ${SLEEP_VULNDB_PROXY_URL:-}
     networks:
       - backend
       - egress
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      # An explicit dependency also keeps `docker compose up --wait` from
+      # treating the finished one-shot service as a failure.
+      vulndb-init:
+        condition: service_completed_successfully
+
+  # One-shot: creates or updates the least-privileged role of vulndb
+  # (deploy/postgres/vulndb-role.sql) and exits. It runs as the database owner,
+  # so the internet-facing vulndb container never receives the owner's password.
+  vulndb-init:
+    image: postgres:16-alpine
+    restart: "no"
+    command: ["psql", "--no-psqlrc", "--quiet", "-v", "ON_ERROR_STOP=1", "-f", "/vulndb-role.sql"]
+    environment:
+      PGHOST: postgres
+      PGDATABASE: ${POSTGRES_DB:-sleep}
+      PGUSER: ${POSTGRES_USER:-sleep}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      VULNDB_DB_USER: ${VULNDB_DB_USER:-sleep_vulndb}
+      VULNDB_DB_PASSWORD: ${VULNDB_DB_PASSWORD:?Set VULNDB_DB_PASSWORD in .env}
+    volumes:
+      - ./deploy/postgres/vulndb-role.sql:/vulndb-role.sql:ro
+    networks:
+      - backend
     security_opt:
       - no-new-privileges:true
     depends_on:

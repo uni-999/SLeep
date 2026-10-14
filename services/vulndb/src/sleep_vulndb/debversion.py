@@ -5,13 +5,24 @@ example ``1:8.9p1-3ubuntu0.10``. They cannot be compared as strings or as
 semantic versions: ``~`` sorts before everything, even the end of the string
 (``1.0~rc1 < 1.0``), letters sort before other symbols, and digit runs are
 compared numerically.
+
+Versions are validated like dpkg validates them: whatever dpkg reports as bad
+syntax, as an error or a warning, is rejected.
 """
 
+import re
 from functools import total_ordering
 
 
 class InvalidVersion(ValueError):
     pass
+
+
+# Debian Policy 5.6.12 and dpkg's parseversion(); ASCII only.
+_EPOCH = re.compile(r"[0-9]+")
+_UPSTREAM = re.compile(r"[0-9][A-Za-z0-9.+~:-]*")
+_REVISION = re.compile(r"[A-Za-z0-9.+~]+")
+_MAX_EPOCH = 2**31 - 1
 
 
 def _order(character: str) -> int:
@@ -63,17 +74,24 @@ class DebianVersion:
         value = text.strip()
         if not value:
             raise InvalidVersion("empty version")
+        if any(character.isspace() for character in value):
+            raise InvalidVersion(f"embedded spaces in {text!r}")
         epoch = 0
         if ":" in value:
             epoch_text, value = value.split(":", 1)
-            if not epoch_text.isdigit():
+            if not _EPOCH.fullmatch(epoch_text) or int(epoch_text) > _MAX_EPOCH:
                 raise InvalidVersion(f"invalid epoch in {text!r}")
             epoch = int(epoch_text)
         upstream, revision = value, ""
         if "-" in value:
             upstream, revision = value.rsplit("-", 1)
-        if not upstream or not upstream[0].isdigit():
-            raise InvalidVersion(f"upstream version must start with a digit: {text!r}")
+            if not _REVISION.fullmatch(revision):
+                raise InvalidVersion(f"invalid revision in {text!r}")
+        if not _UPSTREAM.fullmatch(upstream):
+            raise InvalidVersion(
+                f"invalid upstream version in {text!r}: it must start with a digit and contain only "
+                "letters, digits and . + ~ - :"
+            )
         self.epoch = epoch
         self.upstream = upstream
         self.revision = revision
@@ -95,13 +113,10 @@ class DebianVersion:
     def __lt__(self, other: "DebianVersion") -> bool:
         return self._compare(other) < 0
 
-    def __hash__(self) -> int:
-        return hash(self.text)
+    # Equal versions can be spelled differently ("1.0", "0:1.0", "1.0-0"), so
+    # a hash of the text would break the hash/eq contract. Versions are only
+    # compared, never used as keys: keep them unhashable.
+    __hash__ = None  # type: ignore[assignment]
 
     def __repr__(self) -> str:
         return f"DebianVersion({self.text!r})"
-
-
-def compare_versions(left: str, right: str) -> int:
-    """Return a negative number, zero, or a positive number, like dpkg --compare-versions."""
-    return DebianVersion(left)._compare(DebianVersion(right))

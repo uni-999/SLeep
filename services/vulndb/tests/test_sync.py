@@ -2,7 +2,8 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+import httpx
+from sqlalchemy import Engine, event, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from sleep_vulndb.config import Settings
@@ -408,6 +409,31 @@ def test_network_failure_is_journaled(
     assert as_utc(state_of(sessions, "kev").last_attempt_at) == NOW
 
 
+def test_old_journal_entries_are_deleted(
+    sessions: sessionmaker[Session], http: FeedHttp, settings: Settings, feeds: FakeFeeds
+) -> None:
+    retention = timedelta(days=settings.run_retention_days)
+    with sessions() as session:
+        session.add_all(
+            [
+                SyncRunRecord(id="kev-expired", source="kev", status="succeeded", started_at=NOW - retention - timedelta(hours=1)),
+                SyncRunRecord(id="kev-recent", source="kev", status="failed", started_at=NOW - retention + timedelta(hours=1)),
+                # Never touched: another source keeps its own history, and a
+                # "running" entry is left to mark_interrupted_runs.
+                SyncRunRecord(id="epss-expired", source="epss", status="succeeded", started_at=NOW - 2 * retention),
+                SyncRunRecord(id="kev-stuck", source="kev", status="running", started_at=NOW - 2 * retention),
+            ]
+        )
+        session.commit()
+    feeds.serve(KEV_URL, make_kev([kev_entry("CVE-2021-44228")]))
+
+    assert sync("kev", sessions, http, settings).status == "succeeded"
+
+    with sessions() as session:
+        remaining = set(session.scalars(select(SyncRunRecord.id).where(SyncRunRecord.started_at < NOW)))
+    assert remaining == {"kev-recent", "epss-expired", "kev-stuck"}
+
+
 def test_interrupted_runs_are_closed(sessions: sessionmaker[Session]) -> None:
     with sessions() as session:
         session.add(SyncRunRecord(source="kev", status="running", started_at=NOW))
@@ -417,3 +443,53 @@ def test_interrupted_runs_are_closed(sessions: sessionmaker[Session]) -> None:
     [run] = runs(sessions)
     assert run.status == "failed"
     assert run.error is not None and run.error.startswith("interrupted")
+
+
+# Transactions ----------------------------------------------------------------
+
+
+class TransactionWatch:
+    """Tracks open database transactions and the feed requests made inside one."""
+
+    def __init__(self, engine: Engine) -> None:
+        self.depth = 0
+        self.requests = 0
+        self.inside: list[str] = []
+        event.listen(engine, "begin", self._begin)
+        event.listen(engine, "commit", self._end)
+        event.listen(engine, "rollback", self._end)
+
+    def _begin(self, _connection: Any) -> None:
+        self.depth += 1
+
+    def _end(self, _connection: Any) -> None:
+        self.depth = max(0, self.depth - 1)
+
+    def request(self, request: httpx.Request) -> None:
+        self.requests += 1
+        if self.depth:
+            self.inside.append(str(request.url))
+
+
+def test_feeds_are_downloaded_outside_the_transaction(
+    sessions: sessionmaker[Session], http: FeedHttp, settings: Settings, feeds: FakeFeeds
+) -> None:
+    watch = TransactionWatch(sessions.kw["bind"])
+    feeds.observers.append(watch.request)
+
+    initial_ubuntu_sync(sessions, http, settings, feeds)
+    feeds.serve(
+        UBUNTU_CHANGES,
+        "2026-10-10T09:00:00Z,UBUNTU-CVE-2026-1000\n2026-10-10T08:00:00Z,UBUNTU-CVE-2026-2000\n",
+    )
+    feeds.serve_json(f"{OSV}/Ubuntu/UBUNTU-CVE-2026-1000.json", with_changes(SUDO, modified="2026-10-10T09:00:00Z"))
+    # UBUNTU-CVE-2026-2000 answers 404: the record is deleted, also after the downloads.
+    incremental = sync("osv-ubuntu", sessions, http, settings, now=NOW + timedelta(hours=1))
+    feeds.serve(EPSS_URL, make_epss([("CVE-2024-6387", 0.39, 0.97)]))
+    feeds.serve(KEV_URL, make_kev([kev_entry("CVE-2021-44228")]))
+    epss, kev = sync("epss", sessions, http, settings), sync("kev", sessions, http, settings)
+
+    assert (incremental.mode, incremental.status, incremental.written) == ("incremental", "succeeded", 1)
+    assert (epss.status, kev.status) == ("succeeded", "succeeded")
+    assert watch.requests >= 6
+    assert watch.inside == [], "a feed was requested while a database transaction was open"
