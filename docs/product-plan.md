@@ -18,7 +18,9 @@ specialists. It never receives general-purpose remote control of customer hosts.
 - A separate updater service (`services/vulndb`) keeps a global vulnerability
   knowledge base in the PostgreSQL schema `vulndb`: Debian and Ubuntu advisories
   from OSV.dev, EPSS scores, and the CISA KEV catalog. It is the only service
-  with outbound internet access and holds no tenant data. See
+  with outbound internet access and holds no tenant data. It connects to
+  PostgreSQL under its own role that owns only the `vulndb` schema, so a flaw
+  in parsing external feeds cannot reach tenant data. See
   [`vulnerability-database.md`](vulnerability-database.md).
 - FastAPI exposes tenant-scoped product APIs.
 - React and TypeScript provide the analyst workspace.
@@ -37,6 +39,23 @@ The first device view has two active tabs:
 
 The CVE snapshot is recalculated when device inventory changes and when the
 global vulnerability knowledge base receives new information.
+
+## Vulnerability matching
+
+The agent reports every installed package by its Debian source package name
+and version, together with the OS release in OSV form (for example
+`Ubuntu:22.04:LTS`). The knowledge base answers which CVEs affect that version
+in that release. Versions are compared with the dpkg algorithm, and every
+answer carries its reason (`1:8.9p1-3ubuntu0.6 < 1:8.9p1-3ubuntu0.10`), the
+distribution's fixed version, the CVSS v3.1 base score, the EPSS probability,
+and the KEV flag. The matcher turns these answers into `cve_findings` whose
+evidence names the OSV record, the vulnerable interval, and the reason. EPSS
+and KEV feed the exploitation-probability side of the risk formula below, and
+CVSS feeds the impact side.
+
+The knowledge base covers Debian and Ubuntu today. RHEL-compatible
+distributions need RPM version comparison and their own OSV feeds; Windows
+Server needs a separate source such as the Microsoft Security Update Guide.
 
 ## Event model
 
