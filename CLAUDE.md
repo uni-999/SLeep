@@ -21,21 +21,41 @@ SLeep — учебный проект для выпускной квалифик
 
 Перед содержательными изменениями прочитай документацию:
 
-- `docs/product-plan.md` — цели, принятая архитектура, граница MVP;
+- `docs/product-plan.md` — цели, принятая архитектура, граница MVP и порядок
+  этапов;
+- `docs/cve-minimum.md` — **текущий этап**: минимальная рабочая версия раздела
+  CVE (агент → приём снимков → сопоставление → приоритет → интерфейс), решения,
+  контракты и критерии готовности;
 - `docs/incident-investigation.md` — спецификация упрощённого расследования
   инцидентов (модель данных, хронология, подсказки, API, интерфейс);
+- `docs/vulnerability-database.md` — база знаний об уязвимостях: источники,
+  схема `vulndb`, алгоритм синхронизации, сравнение версий dpkg;
 - `docs/self-hosting.md` — запуск и развёртывание.
 
 ## Текущее состояние
 
+- **Текущий этап — раздел CVE** (`docs/cve-minimum.md`). Расследование
+  инцидентов не начинаем, пока этап не закрыт по критериям раздела 1 этого
+  документа. Задачи вне границы этапа (раздел 2) откладываются.
 - **API** хранит данные в PostgreSQL: SQLAlchemy, Alembic (миграции
   `0001`–`0004`), seed демо-данных по флагу, `/ready`, тесты на изоляцию
   организаций. Ветка `feature/postgres-persistence` влита в `main` (PR #1).
 - **Доступ к сайту** закрыт HTTP basic auth в Caddy (локально
   `analyst` / `sleep-local`) — временно, до настоящей аутентификации.
+- **База знаний об уязвимостях** (`services/vulndb`) — готова: отдельный
+  сервис загружает OSV (Debian, Ubuntu), EPSS и CISA KEV в схему PostgreSQL
+  `vulndb` (своя история Alembic), обновляет их по расписанию и умеет отвечать,
+  какие CVE затрагивают версию пакета (`sleep-vulndb lookup`). Работает под
+  отдельной ролью БД `sleep_vulndb`; ревью закрыто, оставшиеся улучшения —
+  в разделе 9 `docs/vulnerability-database.md`.
+- **Seed** содержит вручную написанную CVE-находку (severity `critical` при
+  CVSS 8.1 — по шкале это `high`) и снимок с бинарным именем пакета
+  `openssh-server`, который база знаний не сопоставит: она ищет по исходному
+  имени (`openssh`). Исправляется на этапе 1 раздела CVE.
 - **Агент на Go** (`agent/`) — не начат: в репозитории только пустые каталоги.
-- **Обработка данных** (сопоставление CVE, кластеризация событий, расчёт риска,
-  план исправлений) — не начата.
+- **Обработка данных** — сопоставление инвентаризации с базой знаний (создание
+  `cve_findings`), кластеризация событий, расчёт риска и план исправлений не
+  начаты.
 - **Расследование инцидентов** — специфицировано, не реализовано.
 - **Веб-интерфейс** не обращается к API: данные захардкожены в
   `apps/web/app/page.tsx`.
@@ -62,8 +82,22 @@ services/api/          FastAPI
     seed.py            Демо-данные
   migrations/          Alembic
   tests/               pytest
+services/vulndb/       Обновление базы знаний об уязвимостях (единственный сервис с выходом в интернет)
+  src/sleep_vulndb/
+    cli.py             Команды run, sync, status, lookup, health
+    scheduler.py       Цикл обновления по интервалам, пульс для healthcheck
+    sync.py            Запуск источника: одна транзакция (сеть — до неё), журнал sync_runs, блокировка
+    sources/           osv.py (Debian, Ubuntu), epss.py, kev.py
+    http.py            Скачивание: условные запросы, повторы, лимит размера
+    lookup.py          Какие CVE затрагивают версию пакета
+    debversion.py      Сравнение версий как в dpkg
+    cvss.py            Базовый балл CVSS v3.1 по вектору
+    db_models.py       Таблицы схемы vulndb
+  migrations/          Alembic, версия в vulndb.alembic_version
+  tests/               pytest; источники подменяются фейковым HTTP
 deploy/Caddyfile       Единая точка входа: / → web, /api/* → api
-compose.yaml           gateway (Caddy), web (nginx), api, postgres
+deploy/postgres/vulndb-role.sql  Роль sleep_vulndb: владеет только схемой vulndb
+compose.yaml           gateway (Caddy), web (nginx), api, vulndb, vulndb-init (создаёт роль), postgres
 compose.dev.yaml       Только для разработки: PostgreSQL на 127.0.0.1:5432
 docs/                  Документация продукта
 ```
@@ -78,9 +112,9 @@ docker compose up --build -d      # http://localhost:8080 (analyst / sleep-local
 docker compose down
 ```
 
-Без `POSTGRES_PASSWORD`, `BASIC_AUTH_USER` и `BASIC_AUTH_HASH` в `.env` стек не
-запустится — так задумано. Хеш пароля в `.env` держи в одинарных кавычках:
-иначе Compose съест символы `$`.
+Без `POSTGRES_PASSWORD`, `VULNDB_DB_PASSWORD`, `BASIC_AUTH_USER` и
+`BASIC_AUTH_HASH` в `.env` стек не запустится — так задумано. Хеш пароля в
+`.env` держи в одинарных кавычках: иначе Compose съест символы `$`.
 
 API (из `services/api`, нужен Python 3.12+):
 
@@ -100,6 +134,19 @@ alembic upgrade head
 python -m sleep_api.seed
 alembic revision -m "описание"     # новая миграция, имя файла — см. ниже
 SLEEP_TEST_DATABASE_URL='postgresql+psycopg://…/test_db' pytest   # тест миграций на PostgreSQL
+```
+
+Сервис базы уязвимостей (из `services/vulndb`, Python 3.12+):
+
+```bash
+python -m venv .venv && . .venv/bin/activate
+pip install -e '.[dev]'
+pytest                             # SQLite; HTTP-источники подменены, интернет не нужен
+SLEEP_TEST_DATABASE_URL='postgresql+psycopg://…/test_db' pytest   # + PostgreSQL (суперпользователь; для test_role.py нужен psql)
+sleep-vulndb sync --source kev     # разовое обновление (нужен интернет)
+sleep-vulndb status                # источники и последний запуск каждого; --runs N — журнал
+sleep-vulndb lookup --ecosystem Ubuntu:22.04:LTS --package openssh --version 1:8.9p1-3ubuntu0.6
+docker compose exec vulndb sleep-vulndb status   # в запущенном стеке
 ```
 
 Веб-интерфейс (из `apps/web`, Node 22.13+, pnpm). Версия pnpm закреплена в
@@ -126,15 +173,23 @@ pnpm format     # oxfmt
 
 - `api` — `pytest` на Python 3.12 с сервисом PostgreSQL 16, включая проверку
   миграций на PostgreSQL (`SLEEP_TEST_DATABASE_URL`);
+- `vulndb` — `pytest` сервиса базы уязвимостей на Python 3.12 с PostgreSQL 16
+  (миграции в схеме `vulndb`, синхронизация, блокировки, роль `sleep_vulndb`
+  через `psql`); интернет не нужен;
 - `web` — `pnpm install --frozen-lockfile`, `pnpm lint`, `pnpm build`;
-- `stack` — после `api` и `web`: собирает весь `docker compose` с демо-данными,
-  ждёт `healthy` и проверяет через шлюз, что без логина отвечает `401`, а с
-  логином открываются интерфейс, `/api/health`, `/api/ready` и устройства.
+- `stack` — после `api`, `vulndb` и `web`: собирает весь `docker compose` с
+  демо-данными и `SLEEP_VULNDB_SOURCES=none` (без внешних источников), ждёт
+  `healthy` и проверяет через шлюз, что без логина отвечает `401`, а с логином
+  открываются интерфейс, `/api/health`, `/api/ready` и устройства; затем
+  проверяет `sleep-vulndb status` и `health` внутри контейнера и что роль
+  `sleep_vulndb` — не суперпользователь, владеет схемой `vulndb` и не читает
+  таблицы API.
 
 **`publish.yml` (Publish)** — запускается событием `workflow_run`, когда Test
 успешно завершился на push в `main`. Публикует ровно протестированный коммит
 (`workflow_run.head_sha`) в GitHub Container Registry:
-`ghcr.io/uni-999/sleep-api` и `ghcr.io/uni-999/sleep-web` с тегами
+`ghcr.io/uni-999/sleep-api`, `ghcr.io/uni-999/sleep-vulndb` и
+`ghcr.io/uni-999/sleep-web` с тегами
 `<12 символов SHA>` и `latest`. Право `packages: write` есть только у этого
 workflow; pull request'ы его не запускают. Публикации идут по одной
 (`concurrency: publish`), чтобы `latest` указывал на последний push. Push в другие ветки
@@ -177,6 +232,18 @@ workflow `Test` используется в `publish.yml` — переимено
 8. **Внешние и внутренние ID.** В БД — UUID; в API — внешние идентификаторы
    (`prod-web-01`, `evt-01842`, `CVE-2024-6387`, `INC-0001`). Внутренние UUID
    наружу не отдаются.
+9. **Выход в интернет — только у `vulndb`.** Он подключён к сети `egress`;
+   API, PostgreSQL и веб остаются во внутренней сети `backend`. Новые внешние
+   источники данных добавляются в `vulndb` (интерфейс `FeedSource`), а не в API.
+   В БД `vulndb` работает под ролью `sleep_vulndb`, которой принадлежит только
+   схема `vulndb`; не давай ей прав на `public` и не подключай его под
+   владельцем БД.
+10. **База знаний — общая и отдельная.** Таблицы `vulndb.*` — справочные данные
+    для всех организаций, без `organization_id`; данные организаций туда не
+    пишутся. У схемы своя история Alembic; таблицы API в `public` её не
+    касаются, и наоборот. Обновление источника атомарно: данные, курсор и
+    запись журнала фиксируются одной транзакцией. Сетевые запросы к
+    источникам выполняются до её начала, а не внутри.
 
 ## Соглашения по коду
 
@@ -204,6 +271,9 @@ workflow `Test` используется в `publish.yml` — переимено
 
 - Тест API поднимает SQLite в памяти с `PRAGMA foreign_keys=ON` и seed
   (фикстура `api` в `tests/test_api.py`).
+- Тесты `vulndb` не ходят в интернет: фикстура `feeds` (`tests/conftest.py`)
+  отдаёт фейковые ответы OSV, EPSS и KEV через `httpx.MockTransport`. На SQLite
+  схема `vulndb` снимается через `schema_translate_map`.
 - Для каждой новой сущности, принадлежащей организации, добавляй тест, что её
   нельзя прочитать или связать из другой организации — через API и напрямую
   через БД (`IntegrityError`).
@@ -247,8 +317,20 @@ workflow `Test` используется в `publish.yml` — переимено
 
 ## Ближайшие задачи
 
-1. Реализовать расследование инцидентов по `docs/incident-investigation.md`
-   (раздел «Этапы реализации»).
-2. Подключить веб-интерфейс к API вместо захардкоженных данных.
-3. Начать Go-агента: сбор пакетов и ОС, отправка снимка инвентаризации.
-4. Сопоставление пакетов с CVE (Ubuntu/Debian на первом шаге) и расчёт риска.
+Этап «Раздел CVE» (`docs/cve-minimum.md`, раздел 7) — по порядку:
+
+0. `vulndb`: сделать пакет библиотекой для API (ошибка инкрементальной
+   синхронизации, проверка правдоподобия и `find_affecting_many` — готовы).
+1. Контракт снимка версии 1, токены устройств, `POST /v1/agent/snapshots`,
+   маршрут агента в Caddy, исправленный seed.
+2. Сопоставление снимка с базой знаний → `cve_findings` (upsert и закрытие,
+   доказательства, `match_status`).
+3. Процесс `matcher`: пересчёт при новом снимке и после обновления базы.
+4. Приоритет находки и риск устройства.
+5. API для интерфейса и подключение `apps/web` к API.
+6. Go-агент (можно вести параллельно с 2–5 после шага 1).
+7. Сквозной тест в CI и демонстрация на ВМ.
+
+После этапа — расследование инцидентов по `docs/incident-investigation.md`
+(раздел «Этапы реализации»). Отдельная роль БД для API с правом только читать
+`vulndb` — в конце этапа CVE, если останется время.

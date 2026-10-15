@@ -11,8 +11,10 @@ explainable remediation plans.
 
 - `apps/web`: SOC analyst workspace built with React, TypeScript, and Vite.
 - `services/api`: tenant-scoped FastAPI API backed by PostgreSQL and Alembic migrations.
+- `services/vulndb`: updater for the global vulnerability knowledge base (OSV Debian/Ubuntu, EPSS, CISA KEV).
 - `docs/product-plan.md`: accepted product decisions, MVP boundary, and deferred work.
-- `compose.yaml`: provider-neutral self-hosted web and API stack behind Caddy.
+- `docs/vulnerability-database.md`: design of the vulnerability knowledge base (in Russian).
+- `compose.yaml`: provider-neutral self-hosted web, API, and updater stack behind Caddy.
 
 The current slice persists representative seed data in PostgreSQL while the
 agent and ingestion pipeline are being implemented.

@@ -45,9 +45,10 @@ jobs:
           owner=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
           short_sha=$(echo "$REVISION" | cut -c1-12)
 
-          for service in api web; do
+          for service in api vulndb web; do
             case "$service" in
               api) context=services/api ;;
+              vulndb) context=services/vulndb ;;
               web) context=apps/web ;;
             esac
             image="ghcr.io/$owner/sleep-$service"

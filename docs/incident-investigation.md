@@ -4,6 +4,10 @@
 MVP. Он дополняет [`product-plan.md`](product-plan.md) и заменяет прежнее
 решение «Incident не входит в MVP».
 
+> **Порядок работ.** Реализация начинается после закрытия этапа «Раздел CVE»
+> ([`cve-minimum.md`](cve-minimum.md)): к этому моменту будут реальные
+> CVE-находки с историей и интерфейс, работающий с API.
+
 ## 1. Цель и границы
 
 Аналитик SOC должен иметь возможность:
@@ -421,7 +425,8 @@ PATCH /v1/incidents/INC-0001
 
 ## 12. Этапы реализации
 
-1. **Схема.** Миграция `0004`: `UNIQUE (organization_id, id)` на
+1. **Схема.** Следующая свободная миграция (`0004` уже занят, свои добавит и
+   этап CVE): `UNIQUE (organization_id, id)` на
    `security_events`, таблицы `incidents`, `incident_events`, `incident_cves`,
    `incident_notes`. Модели SQLAlchemy и Pydantic.
 2. **API.** CRUD инцидента, привязки, переходы статусов, журнал. Тесты на
