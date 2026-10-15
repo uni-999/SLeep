@@ -19,7 +19,7 @@ tenant data. The API will read it to turn inventory snapshots into CVE findings.
 
 ```bash
 sleep-vulndb run        # service mode: sync every source on its own interval
-sleep-vulndb sync       # sync all enabled sources once (--source NAME, --full)
+sleep-vulndb sync       # sync all enabled sources once (--source NAME, --full, --allow-shrink)
 sleep-vulndb status     # last success, cursor, failures, record counts, last run of each source
 sleep-vulndb status --runs 20   # the 20 most recent entries of the run journal
 sleep-vulndb lookup --ecosystem Ubuntu:22.04:LTS --package openssh --version 1:8.9p1-3ubuntu0.6
@@ -32,6 +32,11 @@ In the Compose stack:
 docker compose exec vulndb sleep-vulndb status
 docker compose exec vulndb sleep-vulndb sync --source kev
 ```
+
+A full replacement of a source (OSV archive, EPSS file, KEV catalog) that has
+less than half of the current records is rejected as a truncated feed and the
+existing data stays. If the drop is real, accept it once with
+`sleep-vulndb sync --source NAME --allow-shrink`.
 
 `lookup` expects the Debian **source** package name (`openssh`, not
 `openssh-server`); on a host it is `dpkg-query -W -f='${source:Package} ${Version}\n'`.
@@ -49,6 +54,7 @@ docker compose exec vulndb sleep-vulndb sync --source kev
 | `SLEEP_VULNDB_RUN_RETENTION_DAYS` | 90 | Finished entries of the run journal (`vulndb.sync_runs`) older than this are deleted. |
 | `SLEEP_VULNDB_OSV_FULL_SYNC_DAYS` | 7 | A full OSV download runs at least this often. |
 | `SLEEP_VULNDB_OSV_INCREMENTAL_LIMIT` | 2000 | More changed records than this triggers a full download. |
+| `SLEEP_VULNDB_MIN_FULL_SYNC_RATIO` | 0.5 | A full replacement must keep at least this share of the current records; `0` disables the check. |
 | `SLEEP_VULNDB_OSV_BASE_URL`, `SLEEP_VULNDB_EPSS_URL`, `SLEEP_VULNDB_KEV_URL` | public feeds | Alternative URLs, for example a mirror. |
 
 Database settings are the same as the API's: `SLEEP_DATABASE_URL`, or

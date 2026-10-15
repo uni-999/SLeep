@@ -12,7 +12,7 @@ from sqlalchemy import delete, insert, select
 
 from ..db_models import KevEntryRecord
 from ..timeutil import parse_date
-from .base import FeedDataError, SyncContext, SyncMode, SyncOutcome, SyncStatus
+from .base import FeedDataError, SyncContext, SyncMode, SyncOutcome, SyncStatus, ensure_plausible_size
 from .osv import CVE_ID
 
 
@@ -34,6 +34,7 @@ class KevSource:
         rows = parse_catalog(document)
         session = context.session
         previous_ids = set(session.scalars(select(KevEntryRecord.cve_id)))
+        ensure_plausible_size(context, self.name, len(previous_ids), len(rows))
         session.execute(delete(KevEntryRecord))
         session.execute(insert(KevEntryRecord), rows)
 

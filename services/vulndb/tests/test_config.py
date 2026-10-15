@@ -50,6 +50,16 @@ def test_settings_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.run_retention_days == 30
 
 
+def test_full_sync_ratio(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert Settings.from_env().min_full_sync_ratio == 0.5
+    monkeypatch.setenv("SLEEP_VULNDB_MIN_FULL_SYNC_RATIO", "0")
+    assert Settings.from_env().min_full_sync_ratio == 0
+    for invalid in ("1.5", "-0.1", "half"):
+        monkeypatch.setenv("SLEEP_VULNDB_MIN_FULL_SYNC_RATIO", invalid)
+        with pytest.raises(ConfigurationError, match="SLEEP_VULNDB_MIN_FULL_SYNC_RATIO"):
+            Settings.from_env()
+
+
 def test_invalid_number_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SLEEP_VULNDB_RETRY_MINUTES", "0")
     with pytest.raises(ConfigurationError):

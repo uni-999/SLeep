@@ -27,13 +27,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import delete, insert, select
+from sqlalchemy import delete, func, insert, select
 from sqlalchemy.orm import Session
 
 from ..cvss import VENDOR_SEVERITY, InvalidVector, base_score, severity_from_score
 from ..db_models import AdvisoryRecord, AffectedPackageRecord
 from ..timeutil import as_utc, parse_optional_timestamp, parse_timestamp
-from .base import FeedDataError, SyncContext, SyncMode, SyncOutcome, SyncStatus
+from .base import FeedDataError, SyncContext, SyncMode, SyncOutcome, SyncStatus, ensure_plausible_size
 
 
 logger = logging.getLogger(__name__)
@@ -189,6 +189,7 @@ class OsvSource:
                 return SyncOutcome(mode=SyncMode.FULL, status=SyncStatus.NOT_MODIFIED)
 
             previous_ids = set(session.scalars(select(AdvisoryRecord.id).where(AdvisoryRecord.source == self.name)))
+            previous_relevant = self._count_relevant(session, context.settings.osv_ecosystems)
             self._delete_all(session)
 
             written_ids: set[str] = set()
@@ -226,6 +227,7 @@ class OsvSource:
             raise FeedDataError(
                 f"{self.name}: the archive has no records for the configured releases; keeping existing data"
             )
+        ensure_plausible_size(context, self.name, previous_relevant, len(written_ids))
         if skipped_invalid:
             logger.warning("%s: skipped %d invalid records", self.name, skipped_invalid)
 
@@ -275,9 +277,24 @@ class OsvSource:
         # not run inside the transaction. None means "delete": the record is
         # gone (404) or no longer affects a configured release.
         fetched: dict[str, ParsedAdvisory | None] = {}
+        skipped_invalid = 0
         for record_id in changed:
-            record = context.http.get_json(self._url(context, f"{record_id}.json"))
-            fetched[record_id] = self.parse(record, context.settings.osv_ecosystems) if record is not None else None
+            try:
+                record = context.http.get_json(self._url(context, f"{record_id}.json"))
+                fetched[record_id] = (
+                    self.parse(record, context.settings.osv_ecosystems) if record is not None else None
+                )
+            except (ValueError, TypeError, AttributeError) as error:
+                # The same rule as in _full_sync: one broken record must not stop
+                # the others, or every retry would fail on it until the next full
+                # download. The record is left out of `fetched`, so its previous
+                # version, if any, stays. Network failures are not caught here
+                # (FeedHttpError is not a ValueError): they fail the run and keep
+                # the cursor, so the record is fetched again next time.
+                skipped_invalid += 1
+                logger.warning("%s: skipping %s: %s", self.name, record_id, error)
+        if skipped_invalid:
+            logger.warning("%s: skipped %d invalid records", self.name, skipped_invalid)
         advisories = [item for item in fetched.values() if item is not None]
 
         session = context.session
@@ -294,6 +311,22 @@ class OsvSource:
             written=len(advisories),
             deleted=len(existing - {item.id for item in advisories}),
         )
+
+    def _count_relevant(self, session: Session, ecosystems: frozenset[str] | None) -> int:
+        """Advisories of this source that affect a configured release.
+
+        The size check compares the new archive with these only: after the
+        list of releases is narrowed, records of the dropped releases are
+        expected to disappear and must not look like a truncated feed.
+        """
+        query = (
+            select(func.count(func.distinct(AffectedPackageRecord.advisory_id)))
+            .join(AdvisoryRecord, AdvisoryRecord.id == AffectedPackageRecord.advisory_id)
+            .where(AdvisoryRecord.source == self.name)
+        )
+        if ecosystems is not None:
+            query = query.where(AffectedPackageRecord.ecosystem.in_(ecosystems))
+        return session.scalar(query) or 0
 
     def _delete_all(self, session: Session) -> None:
         source_ids = select(AdvisoryRecord.id).where(AdvisoryRecord.source == self.name)

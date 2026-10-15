@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from ..db_models import EpssScoreRecord
 from ..timeutil import parse_date
-from .base import FeedDataError, SyncContext, SyncMode, SyncOutcome, SyncStatus
+from .base import FeedDataError, SyncContext, SyncMode, SyncOutcome, SyncStatus, ensure_plausible_size
 from .osv import CVE_ID
 
 
@@ -40,6 +40,7 @@ class EpssSource:
                 written_ids = _load(context.session, download.path)
             except (OSError, EOFError, zlib.error, UnicodeDecodeError) as error:
                 raise FeedDataError(f"epss: cannot read the gzip CSV: {error}") from error
+            ensure_plausible_size(context, self.name, len(previous_ids), len(written_ids))
 
         state.etag = download.etag
         state.last_modified = download.last_modified

@@ -1,12 +1,14 @@
 from datetime import UTC, datetime
 
 import pytest
+from sqlalchemy import Engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
 from sleep_vulndb.config import DEFAULT_OSV_ECOSYSTEMS
 from sleep_vulndb.db_models import EpssScoreRecord, KevEntryRecord
 from sleep_vulndb.debversion import DebianVersion, InvalidVersion
-from sleep_vulndb.lookup import find_affecting, is_affected
+from sleep_vulndb import lookup
+from sleep_vulndb.lookup import find_affecting, find_affecting_many, is_affected
 from sleep_vulndb.sources.osv import OSV_SOURCES, _insert
 
 from conftest import load_record, osv_record
@@ -87,6 +89,79 @@ def test_lookup_is_scoped_to_the_release(knowledge: sessionmaker[Session]) -> No
 def test_invalid_installed_version_is_rejected(knowledge: sessionmaker[Session]) -> None:
     with knowledge() as session, pytest.raises(InvalidVersion):
         find_affecting(session, JAMMY, "openssh", "latest")
+
+
+# Batch lookup -----------------------------------------------------------------
+
+SNAPSHOT = [
+    ("openssh", "1:8.9p1-3ubuntu0.6"),
+    ("openssh", "1:8.9p1-3ubuntu0.10"),  # a second installed version of the same source package
+    ("curl", "7.81.0-1ubuntu1.15"),  # nothing known
+    ("sudo", "latest"),  # invalid version
+    ("openssh", "1:8.9p1-3ubuntu0.6"),  # duplicate
+]
+
+
+def test_batch_lookup_matches_single_lookups(knowledge: sessionmaker[Session]) -> None:
+    with knowledge() as session:
+        batch = find_affecting_many(session, JAMMY, SNAPSHOT)
+        for package, version in SNAPSHOT:
+            if (package, version) in batch.invalid_versions:
+                continue
+            assert batch.affected.get((package, version), []) == find_affecting(session, JAMMY, package, version)
+
+    assert set(batch.affected) == {("openssh", "1:8.9p1-3ubuntu0.6"), ("openssh", "1:8.9p1-3ubuntu0.10")}
+    assert [item.cve_id for item in batch.affected[("openssh", "1:8.9p1-3ubuntu0.6")]] == ["CVE-2024-6387"]
+    assert [item.cve_id for item in batch.affected[("openssh", "1:8.9p1-3ubuntu0.10")]] == ["CVE-2026-1000"]
+    assert batch.invalid_versions == [("sudo", "latest")]
+
+
+def count_queries(sessions: sessionmaker[Session]) -> list[str]:
+    statements: list[str] = []
+    engine = sessions.kw["bind"]
+    assert isinstance(engine, Engine)
+
+    @event.listens_for(engine, "before_cursor_execute")
+    def record(_conn: object, _cursor: object, statement: str, *_args: object) -> None:
+        statements.append(statement)
+
+    return statements
+
+
+def test_batch_lookup_queries_once_per_batch_of_names(
+    knowledge: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packages = [(f"pkg{n}", "1.0-1") for n in range(5)] + [("openssh", "1:8.9p1-3ubuntu0.6")]
+    statements = count_queries(knowledge)
+
+    with knowledge() as session:
+        find_affecting_many(session, JAMMY, packages)
+        assert len(statements) == 1
+        monkeypatch.setattr(lookup, "LOOKUP_BATCH_SIZE", 2)
+        statements.clear()
+        find_affecting_many(session, JAMMY, packages)
+        assert len(statements) == 3
+
+
+def test_batch_lookup_of_nothing_does_not_query(knowledge: sessionmaker[Session]) -> None:
+    statements = count_queries(knowledge)
+    with knowledge() as session:
+        assert find_affecting_many(session, JAMMY, [("sudo", "not a version")]).affected == {}
+    assert statements == []
+
+
+def test_malformed_bound_does_not_hide_other_advisories(knowledge: sessionmaker[Session]) -> None:
+    broken = OSV_SOURCES["osv-ubuntu"].parse(
+        osv_record("UBUNTU-CVE-2026-1002", package="openssh",
+                   events=[{"introduced": "0"}, {"fixed": "not a version!"}]),
+        SUPPORTED,
+    )
+    assert broken is not None
+    with knowledge() as session:
+        _insert(session, [broken])
+        session.commit()
+        found = find_affecting(session, JAMMY, "openssh", "1:8.9p1-3ubuntu0.6")
+    assert [item.cve_id for item in found] == ["CVE-2024-6387"]
 
 
 @pytest.mark.parametrize(

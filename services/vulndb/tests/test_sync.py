@@ -1,8 +1,10 @@
+import logging
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
+import pytest
 from sqlalchemy import Engine, event, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -185,6 +187,81 @@ def test_archive_without_usable_records_is_rejected(
     assert count(sessions, AdvisoryRecord) == 2
 
 
+def jammy_records(count_: int, *, start: int = 5000) -> list[dict[str, Any]]:
+    return [osv_record(f"UBUNTU-CVE-2026-{start + n}", package=f"pkg{n}") for n in range(count_)]
+
+
+def test_much_smaller_archive_is_rejected(
+    sessions: sessionmaker[Session], http: FeedHttp, settings: Settings, feeds: FakeFeeds
+) -> None:
+    serve_ubuntu_zip(feeds, jammy_records(10))
+    assert sync("osv-ubuntu", sessions, http, settings).status == "succeeded"
+    serve_ubuntu_zip(feeds, jammy_records(4), etag='"zip-truncated"')
+
+    result = sync("osv-ubuntu", sessions, http, settings, force_full=True)
+
+    assert result.status == "failed"
+    assert "4 records, the knowledge base has 10" in (result.error or "")
+    assert "--allow-shrink" in (result.error or "")
+    assert count(sessions, AdvisoryRecord) == 10, "the rejected archive must not replace anything"
+    assert state_of(sessions, "osv-ubuntu").etag == '"zip-1"'
+
+
+def test_archive_of_half_the_size_is_accepted(
+    sessions: sessionmaker[Session], http: FeedHttp, settings: Settings, feeds: FakeFeeds
+) -> None:
+    serve_ubuntu_zip(feeds, jammy_records(10))
+    sync("osv-ubuntu", sessions, http, settings)
+    serve_ubuntu_zip(feeds, jammy_records(5), etag='"zip-2"')
+
+    result = sync("osv-ubuntu", sessions, http, settings, force_full=True)
+
+    assert (result.status, result.written, result.deleted) == ("succeeded", 5, 5)
+
+
+def test_operator_can_accept_a_much_smaller_archive(
+    sessions: sessionmaker[Session], http: FeedHttp, settings: Settings, feeds: FakeFeeds
+) -> None:
+    serve_ubuntu_zip(feeds, jammy_records(10))
+    sync("osv-ubuntu", sessions, http, settings)
+    serve_ubuntu_zip(feeds, jammy_records(4), etag='"zip-2"')
+
+    result = run_source("osv-ubuntu", sessions=sessions, http=http, settings=settings, now=NOW,
+                        force_full=True, allow_shrink=True)
+
+    assert (result.status, result.written, result.deleted) == ("succeeded", 4, 6)
+    assert count(sessions, AdvisoryRecord) == 4
+
+
+def test_size_check_can_be_disabled(
+    sessions: sessionmaker[Session], http: FeedHttp, settings: Settings, feeds: FakeFeeds
+) -> None:
+    serve_ubuntu_zip(feeds, jammy_records(10))
+    sync("osv-ubuntu", sessions, http, settings)
+    serve_ubuntu_zip(feeds, jammy_records(1), etag='"zip-2"')
+
+    result = sync("osv-ubuntu", sessions, http, replace(settings, min_full_sync_ratio=0), force_full=True)
+
+    assert result.status == "succeeded"
+
+
+def test_narrowing_the_releases_is_not_a_truncated_archive(
+    sessions: sessionmaker[Session], http: FeedHttp, settings: Settings, feeds: FakeFeeds
+) -> None:
+    noble = [osv_record(f"UBUNTU-CVE-2026-{6000 + n}", ecosystem="Ubuntu:24.04:LTS") for n in range(2)]
+    archive = jammy_records(10) + noble
+    serve_ubuntu_zip(feeds, archive)
+    sync("osv-ubuntu", sessions, http, settings)
+    assert count(sessions, AdvisoryRecord) == 12
+    serve_ubuntu_zip(feeds, archive, etag='"zip-2"')
+
+    # Only Ubuntu 24.04 is kept now: 2 of 12 records remain, and that is expected.
+    narrowed = replace(settings, osv_ecosystems=frozenset({"Ubuntu:24.04:LTS"}))
+    result = sync("osv-ubuntu", sessions, http, narrowed, force_full=True)
+
+    assert (result.status, result.written, result.deleted) == ("succeeded", 2, 10)
+
+
 def test_success_after_failure_resets_the_failure_counter(
     sessions: sessionmaker[Session], http: FeedHttp, settings: Settings, feeds: FakeFeeds
 ) -> None:
@@ -305,6 +382,72 @@ def test_malformed_change_list_fails_the_run(
     assert count(sessions, AdvisoryRecord) == 2
 
 
+def test_broken_record_does_not_stop_the_incremental_sync(
+    sessions: sessionmaker[Session],
+    http: FeedHttp,
+    settings: Settings,
+    feeds: FakeFeeds,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The same rule as for the full download: a broken record is skipped with a
+    # warning. Failing the run instead would fail every retry on the same record
+    # and leave the knowledge base stale until the next full download.
+    initial_ubuntu_sync(sessions, http, settings, feeds)
+    updated_sudo = with_changes(SUDO, modified="2026-10-10T08:00:00Z")
+    updated_sudo["affected"][0]["ranges"][0]["events"] = [{"introduced": "0"}, {"fixed": "1.9.9-1ubuntu2.5"}]
+    without_modified = osv_record("UBUNTU-CVE-2026-2001", package="curl")
+    del without_modified["modified"]
+    feeds.serve(
+        UBUNTU_CHANGES,
+        "\n".join(
+            [
+                "2026-10-10T09:00:00Z,UBUNTU-CVE-2024-6387",
+                "2026-10-10T08:30:00Z,UBUNTU-CVE-2026-2001",
+                "2026-10-10T08:00:00Z,UBUNTU-CVE-2026-1000",
+            ]
+        ),
+    )
+    feeds.serve(f"{OSV}/Ubuntu/UBUNTU-CVE-2024-6387.json", "{not json")
+    feeds.serve_json(f"{OSV}/Ubuntu/UBUNTU-CVE-2026-2001.json", without_modified)
+    feeds.serve_json(f"{OSV}/Ubuntu/UBUNTU-CVE-2026-1000.json", updated_sudo)
+
+    with caplog.at_level(logging.WARNING, logger="sleep_vulndb.sources.osv"):
+        result = sync("osv-ubuntu", sessions, http, settings, now=NOW + timedelta(hours=1))
+
+    assert (result.mode, result.status, result.written, result.deleted) == ("incremental", "succeeded", 1, 0)
+    with sessions() as session:
+        # The broken new record is not added; the broken existing one keeps its
+        # previous version until a valid version or a full download replaces it.
+        assert set(session.scalars(select(AdvisoryRecord.id))) == {"UBUNTU-CVE-2024-6387", "UBUNTU-CVE-2026-1000"}
+        fixed = session.scalar(
+            select(AffectedPackageRecord.fixed).where(AffectedPackageRecord.advisory_id == "UBUNTU-CVE-2026-1000")
+        )
+        assert fixed == "1.9.9-1ubuntu2.5"
+    assert count(sessions, AffectedPackageRecord, AffectedPackageRecord.advisory_id == "UBUNTU-CVE-2024-6387") == 2
+    assert as_utc(state_of(sessions, "osv-ubuntu").cursor) == datetime(2026, 10, 10, 9, 0, tzinfo=UTC)
+    assert "skipping UBUNTU-CVE-2024-6387" in caplog.text
+    assert "skipping UBUNTU-CVE-2026-2001" in caplog.text
+    assert "skipped 2 invalid records" in caplog.text
+
+
+def test_unreachable_record_fails_the_incremental_sync(
+    sessions: sessionmaker[Session], http: FeedHttp, settings: Settings, feeds: FakeFeeds
+) -> None:
+    # Only broken data is skipped. A record that cannot be downloaded fails the
+    # run and keeps the cursor, so the next attempt fetches it again.
+    initial_ubuntu_sync(sessions, http, settings, feeds)
+    cursor = state_of(sessions, "osv-ubuntu").cursor
+    feeds.serve(UBUNTU_CHANGES, "2026-10-10T08:00:00Z,UBUNTU-CVE-2026-1000\n")
+    feeds.serve(f"{OSV}/Ubuntu/UBUNTU-CVE-2026-1000.json", "unavailable", status=503)
+
+    result = sync("osv-ubuntu", sessions, http, settings, now=NOW + timedelta(hours=1))
+
+    assert result.status == "failed"
+    assert "HTTP 503" in (result.error or "")
+    assert state_of(sessions, "osv-ubuntu").cursor == cursor
+    assert count(sessions, AdvisoryRecord) == 2
+
+
 # EPSS ------------------------------------------------------------------------
 
 
@@ -363,6 +506,20 @@ def test_invalid_epss_file_keeps_previous_scores(
         assert count(sessions, EpssScoreRecord) == 1
 
 
+def test_much_smaller_epss_file_is_rejected(
+    sessions: sessionmaker[Session], http: FeedHttp, settings: Settings, feeds: FakeFeeds
+) -> None:
+    feeds.serve(EPSS_URL, make_epss([(f"CVE-2026-{1000 + n}", 0.1, 0.5) for n in range(10)]))
+    sync("epss", sessions, http, settings)
+    feeds.serve(EPSS_URL, make_epss([("CVE-2026-1000", 0.2, 0.6)]))
+
+    result = sync("epss", sessions, http, settings)
+
+    assert result.status == "failed"
+    assert "1 records, the knowledge base has 10" in (result.error or "")
+    assert count(sessions, EpssScoreRecord) == 10
+
+
 # KEV -------------------------------------------------------------------------
 
 
@@ -392,6 +549,20 @@ def test_invalid_kev_catalog_is_rejected(
         feeds.serve(KEV_URL, broken)
         assert sync("kev", sessions, http, settings).status == "failed"
     assert count(sessions, KevEntryRecord) == 1
+
+
+def test_much_smaller_kev_catalog_is_rejected(
+    sessions: sessionmaker[Session], http: FeedHttp, settings: Settings, feeds: FakeFeeds
+) -> None:
+    feeds.serve(KEV_URL, make_kev([kev_entry(f"CVE-2026-{1000 + n}") for n in range(10)]))
+    sync("kev", sessions, http, settings)
+    feeds.serve(KEV_URL, make_kev([kev_entry("CVE-2026-1000")]))
+
+    result = sync("kev", sessions, http, settings)
+
+    assert result.status == "failed"
+    assert "1 records, the knowledge base has 10" in (result.error or "")
+    assert count(sessions, KevEntryRecord) == 10
 
 
 # Journal ---------------------------------------------------------------------

@@ -65,6 +65,21 @@ def test_readiness_checks_database(api: tuple[TestClient, sessionmaker[Session]]
     assert response.json() == {"status": "ready"}
 
 
+def test_readiness_reports_an_unavailable_database(api: tuple[TestClient, sessionmaker[Session]]) -> None:
+    client, _ = api
+    unreachable = create_engine("sqlite+pysqlite:////nonexistent-directory/sleep.db")
+
+    def unavailable_session() -> Iterator[Session]:
+        with Session(unreachable) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = unavailable_session
+    response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Database is not available"}
+
+
 def test_devices_are_tenant_scoped(api: tuple[TestClient, sessionmaker[Session]]) -> None:
     client, _ = api
     response = client.get("/v1/devices", headers={"X-Organization-ID": "org-demo"})

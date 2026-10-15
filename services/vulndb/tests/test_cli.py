@@ -8,7 +8,9 @@ from sleep_vulndb.cli import main
 from sleep_vulndb.config import DEFAULT_OSV_ECOSYSTEMS
 from sleep_vulndb.db_models import SyncRunRecord
 from sleep_vulndb.scheduler import write_heartbeat
+from sleep_vulndb.sources import SyncMode, SyncStatus
 from sleep_vulndb.sources.osv import OSV_SOURCES, _insert
+from sleep_vulndb.sync import RunResult
 
 from conftest import load_record
 
@@ -129,3 +131,30 @@ def test_configuration_errors_are_reported(
     monkeypatch.setenv("SLEEP_VULNDB_SOURCES", "nvd")
     assert main(["status"], sessions=sessions) == 2
     assert "nvd" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        (["sync", "--source", "kev"], (False, False)),
+        (["sync", "--source", "kev", "--full"], (True, False)),
+        # Accepting a smaller feed only makes sense for a full download.
+        (["sync", "--source", "kev", "--allow-shrink"], (True, True)),
+    ],
+)
+def test_sync_passes_the_operator_flags(
+    sessions: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    arguments: list[str],
+    expected: tuple[bool, bool],
+) -> None:
+    calls: list[tuple[bool, bool]] = []
+
+    def fake_run_source(name: str, **options: object) -> RunResult:
+        calls.append((bool(options["force_full"]), bool(options["allow_shrink"])))
+        return RunResult(source=name, status=SyncStatus.SUCCEEDED, mode=SyncMode.FULL)
+
+    monkeypatch.setattr("sleep_vulndb.cli.run_source", fake_run_source)
+
+    assert main(arguments, sessions=sessions) == 0
+    assert calls == [expected]

@@ -44,6 +44,9 @@ class Settings:
     osv_incremental_limit: int = 2000
     # A full download also runs at least this often to repair any drift.
     osv_full_sync_days: int = 7
+    # A full replacement of a source must keep at least this share of its
+    # current records, otherwise the run fails and the data stays (0 disables).
+    min_full_sync_ratio: float = 0.5
     epss_url: str = "https://epss.empiricalsecurity.com/epss_scores-current.csv.gz"
     kev_url: str = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
     interval_minutes: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_INTERVAL_MINUTES))
@@ -76,6 +79,7 @@ class Settings:
             osv_ecosystems=parse_ecosystems(os.getenv("SLEEP_VULNDB_OSV_ECOSYSTEMS", "")),
             osv_incremental_limit=_positive_int("SLEEP_VULNDB_OSV_INCREMENTAL_LIMIT", defaults.osv_incremental_limit),
             osv_full_sync_days=_positive_int("SLEEP_VULNDB_OSV_FULL_SYNC_DAYS", defaults.osv_full_sync_days),
+            min_full_sync_ratio=_ratio("SLEEP_VULNDB_MIN_FULL_SYNC_RATIO", defaults.min_full_sync_ratio),
             epss_url=_text("SLEEP_VULNDB_EPSS_URL", defaults.epss_url),
             kev_url=_text("SLEEP_VULNDB_KEV_URL", defaults.kev_url),
             interval_minutes=intervals,
@@ -115,6 +119,19 @@ def parse_ecosystems(value: str) -> frozenset[str] | None:
 
 def _text(variable: str, default: str) -> str:
     return os.getenv(variable) or default
+
+
+def _ratio(variable: str, default: float) -> float:
+    raw = os.getenv(variable)
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError as error:
+        raise ConfigurationError(f"{variable} must be a number from 0 to 1, got {raw!r}") from error
+    if not 0 <= value <= 1:
+        raise ConfigurationError(f"{variable} must be from 0 to 1, got {value}")
+    return value
 
 
 def _positive_int(variable: str, default: int) -> int:

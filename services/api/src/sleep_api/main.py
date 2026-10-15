@@ -1,14 +1,18 @@
+import logging
 import os
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from .database import get_session
 from .models import CveFinding, Device, EventType, ProbeJob, ProbeRequest, SecurityEvent, Severity
 from .repository import SqlRepository
 
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="SLeep API",
@@ -49,7 +53,17 @@ def health() -> dict[str, str]:
 
 @app.get("/ready")
 def readiness(session: DatabaseSession) -> dict[str, str]:
-    session.execute(text("SELECT 1"))
+    """The API is ready when the database answers.
+
+    While PostgreSQL is starting, recovering, or restarting, answer 503 with a
+    one-line log entry: the container healthcheck polls this endpoint every
+    few seconds, and a traceback per poll would bury the real logs.
+    """
+    try:
+        session.execute(text("SELECT 1"))
+    except OperationalError as error:
+        logger.warning("Not ready: the database is unavailable: %s", str(error.orig or error).splitlines()[0])
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database is not available") from None
     return {"status": "ready"}
 
 

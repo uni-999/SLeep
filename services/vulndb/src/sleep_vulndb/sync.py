@@ -56,6 +56,7 @@ def run_source(
     http: FeedHttp,
     settings: Settings,
     force_full: bool = False,
+    allow_shrink: bool = False,
     now: datetime | None = None,
 ) -> RunResult:
     source = SOURCES[name]
@@ -104,6 +105,7 @@ def run_source(
                     state=state,
                     now=started_at,
                     force_full=force_full,
+                    allow_shrink=allow_shrink,
                 )
             )
             finished_at = datetime.now(UTC)

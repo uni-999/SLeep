@@ -39,6 +39,8 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--source", action="append", choices=KNOWN_SOURCES,
                       help="source to sync (repeatable); default: SLEEP_VULNDB_SOURCES")
     sync.add_argument("--full", action="store_true", help="ignore cursors and HTTP validators, reload everything")
+    sync.add_argument("--allow-shrink", action="store_true",
+                      help="accept a full download much smaller than the current data (implies --full)")
 
     status = commands.add_parser("status", help="show the state of every source and its recent runs")
     status.add_argument("--runs", type=_positive_int, metavar="N",
@@ -67,7 +69,13 @@ def main(argv: Sequence[str] | None = None, sessions: sessionmaker[Session] | No
         case "run":
             return _run(settings, sessions)
         case "sync":
-            return _sync(settings, sessions, arguments.source or list(settings.sources), arguments.full)
+            return _sync(
+                settings,
+                sessions,
+                arguments.source or list(settings.sources),
+                full=arguments.full or arguments.allow_shrink,
+                allow_shrink=arguments.allow_shrink,
+            )
         case "status":
             return _status(settings, sessions, arguments.runs)
         case "lookup":
@@ -91,13 +99,23 @@ def _run(settings: Settings, sessions: sessionmaker[Session]) -> int:
     return 0
 
 
-def _sync(settings: Settings, sessions: sessionmaker[Session], sources: list[str], full: bool) -> int:
+def _sync(
+    settings: Settings,
+    sessions: sessionmaker[Session],
+    sources: list[str],
+    *,
+    full: bool,
+    allow_shrink: bool = False,
+) -> int:
     if not sources:
         print("No sources selected.", file=sys.stderr)
         return 2
     with FeedHttp(settings) as http:
-        results = [run_source(name, sessions=sessions, http=http, settings=settings, force_full=full)
-                   for name in sources]
+        results = [
+            run_source(name, sessions=sessions, http=http, settings=settings, force_full=full,
+                       allow_shrink=allow_shrink)
+            for name in sources
+        ]
     for result in results:
         line = f"{result.source:<11} {result.status:<13} written={result.written} deleted={result.deleted}"
         print(line + (f"  {result.error}" if result.error else ""))

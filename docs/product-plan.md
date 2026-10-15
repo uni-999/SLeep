@@ -42,16 +42,20 @@ global vulnerability knowledge base receives new information.
 
 ## Vulnerability matching
 
-The agent reports every installed package by its Debian source package name
-and version, together with the OS release in OSV form (for example
-`Ubuntu:22.04:LTS`). The knowledge base answers which CVEs affect that version
-in that release. Versions are compared with the dpkg algorithm, and every
-answer carries its reason (`1:8.9p1-3ubuntu0.6 < 1:8.9p1-3ubuntu0.10`), the
-distribution's fixed version, the CVSS v3.1 base score, the EPSS probability,
-and the KEV flag. The matcher turns these answers into `cve_findings` whose
-evidence names the OSV record, the vulnerable interval, and the reason. EPSS
-and KEV feed the exploitation-probability side of the risk formula below, and
-CVSS feeds the impact side.
+The agent reports every installed package with both its binary and its Debian
+source package name and version, together with the fields of `/etc/os-release`.
+The cloud maps the OS release to its OSV ecosystem (for example
+`Ubuntu:22.04:LTS`), so the mapping can be fixed without updating agents, and
+matching uses the source package name and source version. A separate matcher
+process in the cloud recalculates findings; the API only stores incoming
+snapshots. The knowledge base answers which CVEs affect that version in that
+release. Versions are compared with the dpkg algorithm, and every answer carries
+its reason (`1:8.9p1-3ubuntu0.6 < 1:8.9p1-3ubuntu0.10`), the distribution's
+fixed version, the CVSS v3.1 base score, the EPSS probability, and the KEV flag.
+The matcher turns these answers into `cve_findings` whose evidence names the OSV
+record, the vulnerable interval, and the reason. EPSS and KEV feed the
+exploitation-probability side of the risk formula below, and CVSS feeds the
+impact side.
 
 The knowledge base covers Debian and Ubuntu today. RHEL-compatible
 distributions need RPM version comparison and their own OSV feeds; Windows
@@ -105,6 +109,26 @@ The MVP supports safe network probes and confirmation of vulnerable behavior
 without obtaining access. The platform sends declarative, allowlisted probe jobs,
 never arbitrary shell commands. Local and cloud probes provide internal and
 external perspectives.
+
+## Delivery phases
+
+The MVP boundary below is delivered in phases. Each phase ends with a working
+end-to-end scenario, not with partially built parts of every component.
+
+1. **CVE workspace (current).** Linux agent for Debian and Ubuntu (OS release
+   and dpkg packages), snapshot ingestion authenticated by a per-device token,
+   matching against the vulnerability knowledge base, recalculation on new
+   snapshots and on knowledge-base updates, an explainable priority score, and
+   the `CVE` tab of the analyst workspace backed by the API. Scope, decisions,
+   contracts, and acceptance criteria are in
+   [`cve-minimum.md`](cve-minimum.md) (in Russian).
+2. **Incident investigation.** As specified in
+   [`incident-investigation.md`](incident-investigation.md); starts only after
+   phase 1 is accepted.
+3. **Remaining MVP scope.** Log collection and event clustering beyond seed
+   data, RHEL-compatible and Windows agents, mTLS enrollment, execution of
+   safe probes, network exposure, the remediation plan with horizons, and
+   analyst authentication.
 
 ## MVP boundary
 
